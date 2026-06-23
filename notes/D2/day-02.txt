@@ -1,0 +1,303 @@
+================================================================================
+GHI CHÚ HỌC TẬP CHI TIẾT - NGÀY 02: BỘ NHỚ JVM (JVM MEMORY LAYOUT & MODEL)
+================================================================================
+
+Tài liệu này tổng hợp toàn bộ kiến thức chuyên sâu về quản lý bộ nhớ trong JVM,
+phân biệt Heap vs Stack, thế hệ bộ nhớ Heap, cấu hình flags, đối chiếu Laravel
+và các lỗi tràn bộ nhớ kinh điển.
+
+--------------------------------------------------------------------------------
+PHẦN I: TOÀN CẢNH CÁC VÙNG NHỚ TRONG JVM (RUNTIME DATA AREAS)
+--------------------------------------------------------------------------------
+
+Khi máy ảo JVM khởi chạy một ứng dụng Java, nó xin hệ điều hành cấp phát một vùng
+RAM lớn và phân chia thành các vùng nhớ chuyên dụng sau:
+
+1. Sơ đồ phân chia vùng nhớ:
+
+   +-----------------------------------------------------------------------+
+   |                        JVM Runtime Data Areas                         |
+   +-----------------------------------------------------------------------+
+   |   DÙNG CHUNG (Mọi Thread đều dùng chung)                              |
+   |                                                                       |
+   |   +---------------------------------+ +---------------------------+   |
+   |   |             HEAP                | |         METASPACE         |   |
+   |   |  - young gen (Eden, S0, S1)     | |  - Metadata của Class     |   |
+   |   |  - old gen                      | |  - Method, Field metadata |   |
+   |   |  - String Pool (từ Java 7)      | |  - Native memory (RAM OS) |   |
+   |   +---------------------------------+ +---------------------------+   |
+   +-----------------------------------------------------------------------+
+   |   DÙNG RIÊNG (Mỗi Thread khi sinh ra có một bản riêng biệt)           |
+   |                                                                       |
+   |   +-----------------+ +-----------------+ +-----------------------+   |
+   |   |    JVM STACK    | |   PC REGISTER   | | NATIVE METHOD STACK |   |
+   |   |  - Local Vars   | |  - Địa chỉ lệnh | |  - Stack chứa mã    |   |
+   |   |  - Operand Stack| |    đang chạy    | |    native C/C++     |   |
+   |   +-----------------+ +-----------------+ +-----------------------+   |
+   +-----------------------------------------------------------------------+
+
+2. Mô tả chi tiết từng vùng:
+
+   a. HEAP AREA (Vùng nhớ Heap):
+      - Đặc điểm: Là vùng lớn nhất, khởi tạo khi JVM start, dùng chung cho mọi thread.
+      - Chức năng: Lưu trữ toàn bộ các thực thể đối tượng (objects) được khởi
+        tạo qua từ khóa `new`, các mảng (arrays), và String Pool.
+      - Quản lý: GC (Garbage Collector) dọn dẹp bộ nhớ ở đây.
+      - Lỗi tràn: `OutOfMemoryError: Java heap space`.
+
+   b. JVM STACK (Vùng nhớ Stack):
+      - Đặc điểm: Mỗi thread có một stack riêng, được tạo khi thread start.
+      - Chức năng: Lưu trữ các Stack Frame. Mỗi khi một hàm được gọi, một frame
+        được push vào Stack. Khi hàm chạy xong, frame bị pop ra.
+      - Lỗi tràn: `StackOverflowError`.
+
+   c. METASPACE (Vùng lưu trữ Metadata):
+      - Đặc điểm: Dùng chung cho mọi thread, nằm ở RAM vật lý của OS (Native Memory)
+        thay vì nằm trong Heap giống như PermGen cũ.
+      - Chức năng: Lưu trữ cấu trúc của class (Metadata), các phương thức,
+        constant pool, thông tin kiểu dữ liệu.
+      - Lỗi tràn: `OutOfMemoryError: Metaspace`.
+
+   d. PC REGISTER (Program Counter Register):
+      - Đặc điểm: Riêng cho từng thread.
+      - Chức năng: Lưu địa chỉ của lệnh JVM đang thực thi hiện tại của thread đó.
+
+   e. NATIVE METHOD STACK:
+      - Đặc điểm: Riêng cho từng thread.
+      - Chức năng: Hỗ trợ thực thi các phương thức native (viết bằng C/C++ thông
+        qua JNI).
+
+--------------------------------------------------------------------------------
+PHẦN II: CẤU TRÚC CHI TIẾT CỦA HEAP (YOUNG vs OLD GENERATION)
+--------------------------------------------------------------------------------
+
+Để tối ưu hóa Garbage Collection, Heap được chia làm 2 thế hệ chính dựa theo giả
+thuyết "Hầu hết các đối tượng đều chết trẻ" (Weak Generational Hypothesis):
+
+1. Young Generation (Thế hệ trẻ):
+   - Eden: Nơi mọi đối tượng mới khởi tạo (qua từ khóa `new`) sinh ra đầu tiên.
+   - Survivor Spaces (S0 và S1 - còn gọi là From/To space): Hai vùng nhớ có kích
+     thước bằng nhau. Tại một thời điểm, chỉ một vùng chứa dữ liệu, vùng kia rỗng.
+   - Cơ chế dọn rác ở Young Gen (Minor GC):
+     + Khi vùng Eden đầy, JVM kích hoạt Minor GC.
+     + Các đối tượng đã chết (không còn tham chiếu trỏ tới) bị dọn sạch.
+     + Các đối tượng còn sống được chuyển sang một trong hai Survivor (ví dụ S0)
+       và được gán tuổi (age = 1).
+     + Ở lần Minor GC tiếp theo, Eden và S0 được quét. Đối tượng còn sống được
+       chuyển qua S1 và tăng tuổi lên 2. Quy trình đảo giữa S0 và S1 lặp lại liên
+       tục.
+
+2. Old Generation (Thế hệ già / Tenured):
+   - Chức năng: Lưu trữ các đối tượng "sống dai" có tuổi vượt quá ngưỡng quy
+     định (thường cấu hình qua `-XX:MaxTenuringThreshold`, mặc định thường là 15).
+   - Cơ chế dọn rác ở Old Gen (Major GC / Full GC):
+     + Diễn ra khi Old Gen đầy bộ nhớ.
+     + Quá trình Full GC quét toàn bộ Heap nên tốn rất nhiều thời gian và gây ra
+       hiện tượng đứng hình ứng dụng tạm thời (Stop-The-World - STW).
+
+* Lưu ý về String Pool: Từ Java 7, String Pool được đưa từ PermGen vào trong Heap.
+  Giờ đây, các chuỗi ký tự hằng (String literals) cũng được quản lý và dọn dẹp bởi
+  GC như các đối tượng Heap thông thường.
+
+--------------------------------------------------------------------------------
+PHẦN III: CẤU TRÚC CHI TIẾT CỦA JVM STACK & STACK FRAME
+--------------------------------------------------------------------------------
+
+1. Cơ chế LIFO (Last In, First Out):
+   Mỗi lời gọi hàm được bọc trong một Stack Frame. Hàm gọi sau cùng nằm ở trên đỉnh,
+   được thực thi trước. Khi hàm trả về, frame biến mất, nhường quyền chạy cho frame
+   bên dưới.
+
+2. Cấu trúc của một Stack Frame:
+   - Local Variable Array (Mảng biến cục bộ):
+     + Chứa biến `this` (nếu là hàm instance).
+     + Chứa các tham số truyền vào hàm.
+     + Chứa các biến cục bộ kiểu nguyên thủy (primitive: int, float, double, char,
+       boolean, long...).
+     + Chứa địa chỉ tham chiếu (reference) trỏ tới đối tượng thực trên Heap.
+   - Operand Stack (Ngăn xếp tính toán): Vùng nhớ đệm để máy ảo JVM thực hiện các
+     phép toán bytecode trung gian (cộng, nhân, gán giá trị...).
+   - Frame Data: Chứa thông tin constant pool tham chiếu, thông tin trả về của
+     hàm, và bảng xử lý Exception.
+
+3. Điểm mấu chốt cần phân biệt:
+   - Bản chất của phép gán đối tượng:
+     Khi bạn viết `Point p1 = new Point(1, 2);`
+     + `p1` thực chất là một biến reference lưu địa chỉ (con trỏ), nằm trên Stack.
+     + Đối tượng `Point` thật chứa dữ liệu `x=1, y=2` nằm trên Heap.
+     + Khi bạn gán `Point p2 = p1;` -> Chỉ sao chép địa chỉ trên Stack từ `p1` sang
+       `p2`. Hai biến này cùng trỏ tới 1 thực thể Point duy nhất trên Heap. Sửa `p2`
+       thì `p1` sẽ thấy sự thay đổi.
+
+--------------------------------------------------------------------------------
+PHẦN IV: METASPACE vs PERMGEN (CẢI TIẾN TỪ JAVA 8)
+--------------------------------------------------------------------------------
+
+1. Sự khác biệt:
+   - PermGen (Permanent Generation):
+     + Nằm trong Heap RAM. Kích thước bị giới hạn cứng (`-XX:MaxPermSize`).
+     + Phải chứa cả Class Metadata và String Pool (ở Java cổ).
+     + Rất dễ dính lỗi OutOfMemoryError khi ứng dụng nạp quá nhiều class động.
+   - Metaspace:
+     + Nằm bên ngoài Heap, thuộc vùng nhớ Native Memory của hệ điều hành.
+     + Kích thước co giãn linh hoạt theo RAM vật lý của máy.
+     + Không chứa String Pool.
+
+2. Rủi ro thực tế:
+   - Vì Metaspace có thể co giãn tự do, nếu ứng dụng bị lỗi rò rỉ Class (Class Loader
+     leak do liên tục sinh proxy/class động), nó sẽ âm thầm ăn sạch RAM của máy chủ,
+     khiến hệ điều hành bị sập. Do đó trên môi trường Production, bắt buộc phải giới
+     hạn Metaspace bằng flag `-XX:MaxMetaspaceSize`.
+
+--------------------------------------------------------------------------------
+PHẦN V: PHÂN BIỆT STACKOVERFLOWERROR vs OUTOFMEMORYERROR
+--------------------------------------------------------------------------------
+
+Hai lỗi này đều kế thừa từ lớp `Error` (lỗi nghiêm trọng của JVM, không nên catch).
+
+1. StackOverflowError:
+   - Vùng cạn kiệt: JVM Stack của một thread cụ thể.
+   - Nguyên nhân: Số lượng Stack Frame push vào vượt quá dung lượng giới hạn của Stack.
+     Thường do lỗi đệ quy vô hạn hoặc vòng lặp gọi hàm quá sâu.
+   - Khắc phục: Sửa lỗi thuật toán (thêm điều kiện dừng đệ quy, chuyển đệ quy thành
+     vòng lặp khử đệ quy).
+   - Chú ý: Tăng cờ `-Xss` chỉ là giải pháp tạm thời và không giải quyết được nếu logic
+     đệ quy bị sai.
+
+2. OutOfMemoryError (OOM):
+   - Vùng cạn kiệt: Heap space hoặc Metaspace.
+   - Nguyên nhân:
+     + Heap space: Do tạo quá nhiều đối tượng sống lâu hoặc bị Memory Leak khiến GC
+       không thể dọn dẹp.
+     + Metaspace: Nạp quá nhiều class hoặc rò rỉ Class Loader.
+   - Khắc phục: Phân tích Heap Dump bằng các công cụ gỡ lỗi (Eclipse MAT, VisualVM)
+     để tìm xem đối tượng nào đang chiếm dụng bộ nhớ nhiều nhất mà không được giải
+     phóng, sửa mã nguồn loại bỏ các tham chiếu thừa.
+
+--------------------------------------------------------------------------------
+PHẦN VI: CÁC FLAGS CẤU HÌNH BỘ NHỚ JVM QUAN TRỌNG
+--------------------------------------------------------------------------------
+
+- `-Xms`: Đặt dung lượng Heap khởi tạo khi JVM bắt đầu chạy.
+  Ví dụ: `-Xms512m` (khởi tạo Heap 512 Megabytes).
+- `-Xmx`: Đặt dung lượng Heap tối đa.
+  Ví dụ: `-Xmx2g` (Heap không được vượt quá 2 Gigabytes).
+- `-Xss`: Đặt kích thước Stack cho mỗi Thread đơn lẻ.
+  Ví dụ: `-Xss512k` (mỗi luồng có 512 Kilobytes bộ nhớ stack).
+- `-XX:MaxMetaspaceSize`: Giới hạn dung lượng tối đa cho vùng Metaspace.
+  Ví dụ: `-XX:MaxMetaspaceSize=256m`.
+
+* Kinh nghiệm Production/Docker Container:
+  - Hãy luôn đặt `-Xms` bằng `-Xmx` (ví dụ: `-Xms2g -Xmx2g`). Việc này giúp JVM xin
+    cấp phát cố định toàn bộ Heap ngay từ đầu, tránh việc liên tục co giãn kích thước
+    Heap khi ứng dụng chạy, giảm bớt thời gian đứng hình của GC (GC Pause).
+  - Tránh đặt `-Xss` quá lớn. Vì Stack cấp phát theo từng Thread, nếu đặt `-Xss` lớn
+    (ví dụ 10MB) và app chạy 1000 Thread, JVM sẽ tốn tới 10GB RAM chỉ cho Stack.
+
+--------------------------------------------------------------------------------
+PHẦN VII: ĐỐI CHIẾU HỆ TƯ DUY: PHP/LARAVEL vs JAVA/SPRING BOOT
+--------------------------------------------------------------------------------
+
+1. PHP/Laravel:
+   - Thiết kế dạng Shared-nothing. Bộ nhớ được cấp phát độc lập cho từng request HTTP.
+   - Khi request chạy xong, toàn bộ đối tượng trên RAM bị hủy hoàn toàn.
+   - Lập trình viên hầu như không lo lắng về "Memory Leak tích lũy" vì bộ nhớ luôn được
+     làm sạch sau mỗi vài mili-giây.
+
+2. Java/Spring Boot:
+   - Chạy trên một tiến trình JVM lâu dài. Heap dùng chung cho mọi request và sống mãi.
+   - Nếu bạn đưa một đối tượng vào một danh sách tĩnh (`static List` hoặc `static Map`)
+     nhưng quên xóa đi khi request kết thúc, đối tượng đó sẽ ở lại Heap vĩnh viễn
+     (vì vẫn còn tham chiếu từ biến static). Qua hàng triệu request, Heap sẽ bị
+     phình to dẫn đến OutOfMemoryError.
+   - Lập trình viên bắt buộc phải kiểm soát vòng đời đối tượng và hiểu rõ khi nào đối
+     tượng được GC dọn dẹp.
+
+--------------------------------------------------------------------------------
+PHẦN VIII: BỘ CÂU HỎI PHỎNG VẤN VÀ ĐÁP ÁN GỢI Ý CHI TIẾT
+--------------------------------------------------------------------------------
+
+CÂU 1: So sánh bộ nhớ Heap và Stack của JVM. Vùng nào an toàn đa luồng (Thread-safe)?
+ĐÁP ÁN:
+- Stack: Lưu trữ các biến cục bộ (primitives) và tham chiếu (references) của riêng
+  từng Thread. Mỗi Thread có Stack riêng nên Stack hoàn toàn Thread-safe (an toàn
+  đa luồng), không bị tranh chấp.
+- Heap: Lưu trữ các đối tượng thực tế (`new`). Vùng nhớ Heap dùng chung cho toàn bộ
+  các Thread. Do đó, các Thread chạy song song có thể cùng truy cập và thay đổi một
+  đối tượng trên Heap, gây ra tranh chấp dữ liệu (Race Condition). Heap KHÔNG mặc định
+  Thread-safe, cần cơ chế đồng bộ hóa (synchronization) khi truy cập.
+
+CÂU 2: Tại sao khi gặp lỗi `StackOverflowError`, việc tăng kích thước `-Xss` thường
+       là giải pháp tồi?
+ĐÁP ÁN:
+- Hơn 95% trường hợp `StackOverflowError` xảy ra do lỗi logic lập trình: đệ quy vô
+  hạn (thiếu điểm dừng) hoặc gọi hàm chéo nhau tạo thành vòng lặp vô hạn.
+- Nếu logic bị sai, việc tăng `-Xss` chỉ trì hoãn thời điểm lỗi xảy ra thêm một vài
+  mili-giây chứ không giải quyết được gốc rễ vấn đề.
+- Nguy hiểm hơn, việc tăng `-Xss` cho tất cả các luồng sẽ làm tăng tổng lượng RAM
+  tiêu thụ của ứng dụng, dễ gây tràn RAM vật lý của hệ thống.
+
+CÂU 3: Cơ chế "Garbage Collection Generational Hypothesis" là gì?
+ĐÁP ÁN:
+- Là giả thuyết cho rằng hầu hết các đối tượng trong chương trình Java có vòng đời
+  rất ngắn (chết trẻ), ví dụ như các biến tạm, DTO nhận request, biến cục bộ.
+- Dựa trên giả thuyết này, JVM chia Heap thành Young Generation ( Eden, S0, S1)
+  và Old Generation.
+- Hầu hết rác được dọn ở Young Generation bằng Minor GC (rất nhanh và nhẹ). Chỉ những
+  đối tượng thực sự cần thiết, sống sót qua nhiều đợt kiểm tra mới được chuyển sang
+  Old Generation. Thiết kế này giúp giảm thiểu việc quét toàn bộ Heap, tăng hiệu năng
+  và giảm thời gian dừng hệ thống (STW Pause).
+
+CÂU 4: Class Loader Leak là gì và nó liên quan thế nào đến Metaspace?
+ĐÁP ÁN:
+- Class Loader Leak xảy ra khi một Class Loader (bộ nạp class) không được giải phóng
+  khỏi bộ nhớ mặc dù ứng dụng không còn sử dụng các Class do nó nạp.
+- Do Class Loader giữ tham chiếu tới tất cả các Class nó đã nạp, và các Class này
+  giữ thông tin metadata trong Metaspace. Nếu Class Loader bị rò rỉ, toàn bộ dữ liệu
+  metadata đó sẽ bị kẹt lại trong Metaspace vĩnh viễn.
+- Lỗi này thường gặp ở các máy chủ ứng dụng hỗ trợ hot-deploy (redeploy ứng dụng
+  nhiều lần mà không khởi động lại máy chủ). Kết quả là Metaspace liên tục phình to
+  và dẫn đến `OutOfMemoryError: Metaspace`.
+
+--------------------------------------------------------------------------------
+PHẦN IX: NHẬT KÝ THỰC HÀNH VÀ MINI PROJECT NGÀY 02
+--------------------------------------------------------------------------------
+
+1. Mã nguồn thực hành kiểm tra bộ nhớ Heap:
+   Tệp `HeapInfo.java` dùng để xem kích thước Heap lúc Runtime:
+   ```java
+   public class HeapInfo {
+       public static void main(String[] args) {
+           Runtime rt = Runtime.getRuntime();
+           long mb = 1024 * 1024;
+           System.out.println("Heap max (-Xmx): " + rt.maxMemory() / mb + " MB");
+           System.out.println("Heap total:      " + rt.totalMemory() / mb + " MB");
+           System.out.println("Heap free:       " + rt.freeMemory() / mb + " MB");
+       }
+   }
+   ```
+   Chạy thử với các cấu hình bộ nhớ khác nhau:
+   `java -Xms128m -Xmx512m HeapInfo` -> Output hiển thị Heap Max ~ 512 MB.
+   `java -Xms1g -Xmx1g HeapInfo` -> Output hiển thị Heap Max ~ 1024 MB.
+
+2. Phân tích vùng nhớ của dự án Đấu giá (Auction API):
+   Khi khởi chạy class `AuctionApp`:
+   ```java
+   Auction auction = new Auction("Tranh cổ", 1_000_000);
+   auction.placeBid(new Bid("An", 1_200_000));
+   ```
+   - Trạng thái vùng nhớ trên RAM:
+     + Biến local `auction` nằm trên STACK của Thread chạy hàm `main`. Biến này chỉ
+       chứa địa chỉ trỏ tới Heap.
+     + Đối tượng `Auction` chứa thuộc tính `itemName` (chuỗi "Tranh cổ") và danh sách
+       `bids` (dạng ArrayList) nằm trên HEAP.
+     + Khi gọi `new Bid("An", 1_200_000)`, một đối tượng `Bid` mới được cấp phát trên
+       HEAP. Địa chỉ của đối tượng `Bid` này được thêm vào mảng nội bộ của `ArrayList`
+       (cũng trên HEAP).
+     + Khi hàm kết thúc, biến `auction` trên STACK bị xóa bỏ. Nếu không có luồng nào
+       khác tham chiếu tới đối tượng `Auction` này nữa, nó cùng danh sách `bids` và
+       các đối tượng `Bid` bên trong sẽ được Garbage Collector thu hồi ở lần quét sau.
+
+================================================================================
+KẾT THÚC GHI CHÚ NGÀY 02 - ĐÃ HOÀN THÀNH TẤT CẢ CHECKLIST VÀ PHÂN TÍCH VÙNG NHỚ
+================================================================================
