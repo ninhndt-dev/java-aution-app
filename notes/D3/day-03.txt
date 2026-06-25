@@ -1,0 +1,433 @@
+================================================================================
+GHI CHÚ HỌC TẬP CHI TIẾT - NGÀY 03: VÒNG ĐỜI ĐỐI TƯỢNG (OBJECT LIFECYCLE)
+================================================================================
+
+Tài liệu này tổng hợp toàn bộ lý thuyết chuyên sâu về cách khởi tạo đối tượng, thứ
+tự chạy static/instance block khi có kế thừa, cơ chế GC Roots, 4 cấp độ tham chiếu,
+tại sao khai tử finalize(), Try-with-resources và so sánh chi tiết với PHP/Laravel.
+
+--------------------------------------------------------------------------------
+PHẦN I: NĂM CÁCH KHỞI TẠO ĐỐI TƯỢNG TRONG JAVA
+--------------------------------------------------------------------------------
+
+Mỗi đối tượng (Object) trong Java đều được cấp phát bộ nhớ trên Heap. Có 5 cách chính
+để tạo ra một đối tượng:
+
+1. Sử dụng toán tử `new`:
+   - Cú pháp: `User u = new User("An");`
+   - Cơ chế: Gọi trực tiếp constructor của Class. Đây là phương thức khởi tạo
+     phổ biến nhất (chiếm 99% code thông thường).
+
+2. Sử dụng Reflection (Phản chiếu):
+   - Cú pháp: `User u = User.class.getDeclaredConstructor().newInstance();`
+   - Cơ chế: Gọi constructor thông qua các class đại diện ở runtime.
+   - Ứng dụng thực tế: Được sử dụng rộng rãi bởi các Framework lớn như Spring Boot
+     (để khởi tạo Bean, Dependency Injection) hoặc Hibernate/JPA (để map dữ liệu
+     từ Database vào Entity class).
+   - *Lưu ý:* Việc Spring/JPA tự động tạo đối tượng qua Reflection giải thích vì sao
+     các Class Entity/Component luôn bắt buộc phải có một Constructor không tham
+     số (No-argument Constructor).
+
+3. Sử dụng phương thức `clone()`:
+   - Cú pháp: `User u2 = (User) u1.clone();`
+   - Cơ chế: Tạo ra một bản sao chính xác từng bit dữ liệu (shallow copy hoặc
+     deep copy tùy cách cài đặt) của đối tượng cũ.
+   - *Điểm nguy hiểm:* Cách này KHÔNG gọi bất kỳ Constructor nào. Mọi logic kiểm
+     tra tính hợp lệ của dữ liệu (validation logic) nằm trong Constructor sẽ bị
+     bỏ qua.
+
+4. Sử dụng Deserialization (Giải tuần tự hóa):
+   - Cú pháp: `User u = (User) objectInputStream.readObject();`
+   - Cơ chế: Khôi phục lại trạng thái đối tượng từ một luồng dữ liệu byte (đọc từ
+     file, network, Redis cache...).
+   - *Điểm nguy hiểm:* Tương tự như `clone()`, Deserialization KHÔNG gọi
+     Constructor, dễ bị khai thác bảo mật và làm hỏng trạng thái nhất quán của dữ liệu.
+
+5. Sử dụng Static Factory Method (Phương thức nhà máy tĩnh):
+   - Cú pháp: `User u = User.of("An");` hoặc `List.of(1, 2, 3);`
+   - Cơ chế: Gián tiếp gọi toán tử `new` bên trong một phương thức static của lớp.
+   - Ưu điểm:
+     + Có tên gọi rõ ràng, dễ hiểu (ví dụ: `User.createGuest()` thay vì `new User(true)`).
+     + Có thể tái sử dụng các đối tượng đã được khởi tạo sẵn (như `Integer.valueOf(10)`
+       cache các số từ -128 đến 127), giúp tiết kiệm RAM.
+     + Có thể trả về các lớp con (Subclasses) tùy vào điều kiện đầu vào.
+   - Nhược điểm: Lớp con muốn kế thừa lớp cha bắt buộc cha phải có constructor
+     public hoặc protected. Nếu cha chỉ có constructor private (để bắt buộc dùng
+     factory method) thì lớp đó không thể kế thừa được.
+
+--------------------------------------------------------------------------------
+PHẦN II: THỨ TỰ KHỞI TẠO CHI TIẾT (INITIALIZATION ORDER)
+--------------------------------------------------------------------------------
+
+JVM tuân thủ một thứ tự chạy cực kỳ nghiêm ngặt khi nạp Class và khi khởi tạo đối tượng.
+
+1. Khi Class được nạp vào bộ nhớ lần đầu tiên (Chỉ chạy ĐÚNG 1 LẦN duy nhất):
+   - Bước 1: Cấp phát bộ nhớ và gán giá trị mặc định cho các biến tĩnh (static fields:
+     số = 0/0.0, boolean = false, object = null).
+   - Bước 2: Chạy các khối lệnh static (`static {}`) và khối khởi tạo biến tĩnh
+     theo đúng thứ tự xuất hiện của chúng trong file code từ trên xuống dưới.
+
+2. Khi khởi tạo đối tượng bằng toán tử `new` (Chạy mỗi khi gọi `new`):
+   - Bước 3: Cấp phát bộ nhớ trên Heap và gán giá trị mặc định cho các biến thực
+     thể (instance fields).
+   - Bước 4: Gọi phương thức `super()` của lớp cha (Constructor của lớp cha phải
+     chạy xong trước).
+   - Bước 5: Chạy các khối khởi tạo biến thực thể (instance fields initializer) và
+     khối lệnh thực thể (`{}`) theo đúng thứ tự từ trên xuống dưới trong file code.
+   - Bước 6: Chạy phần thân (body) của Constructor của chính lớp đó.
+
+3. Thứ tự khởi tạo đầy đủ khi có kế thừa (Ví dụ: Class Dog kế thừa Class Animal):
+   Khi gọi `new Dog()` lần đầu tiên:
+
+   (1) Chạy Khối static của CHA (Animal)
+   (2) Chạy Khối static của CON (Dog)
+   -----------------------------------------------------------------------------
+   (Lần new tiếp theo sẽ bỏ qua bước (1) và (2) ở trên, chỉ chạy từ bước 3)
+   -----------------------------------------------------------------------------
+   (3) Chạy Khối khởi tạo thực thể (instance init block) của CHA (Animal)
+   (4) Chạy phần thân Constructor của CHA (Animal)
+   (5) Chạy Khối khởi tạo thực thể (instance init block) của CON (Dog)
+   (6) Chạy phần thân Constructor của CON (Dog)
+
+* Nguyên tắc cốt lõi: "Tĩnh (static) chạy trước thực thể (instance); Cha (parent)
+  khởi tạo xong mới đến lượt Con (child)".
+* Bẫy Override nguy hiểm: Nếu Constructor của cha gọi một phương thức bị lớp con
+  Override (ghi đè), thì tại thời điểm cha chạy constructor (bước 4), các biến
+  thực thể của lớp con VẪN CHƯA được khởi tạo (bước 5 chưa chạy). Lớp con sẽ đọc
+  ra giá trị mặc định (`null` hoặc `0`), gây lỗi logic nghiêm trọng. Không gọi
+  hàm có thể bị ghi đè trong Constructor.
+
+--------------------------------------------------------------------------------
+PHẦN III: REACHABILITY - CƠ CHẾ GC ROOTS VÀ island of isolation
+--------------------------------------------------------------------------------
+
+Java giải phóng bộ nhớ tự động bằng cơ chế dọn rác Tracing (Dò vết) thay vì đếm tham
+chiếu đơn thuần.
+
+1. GC Roots (Điểm gốc để quét):
+   JVM bắt đầu quét từ các nút gốc gọi là GC Roots, bao gồm:
+   - Các biến cục bộ (local variables) và tham số nằm trên JVM Stack của các thread
+     đang hoạt động.
+   - Các biến tĩnh (static variables) của các Class được nạp.
+   - Tham chiếu hoạt động từ code native (JNI).
+
+2. Cách đánh dấu (Tracing):
+   - JVM đi từ các GC Roots, lần theo các liên kết tham chiếu để tìm và đánh dấu
+     tất cả các đối tượng có thể "với tới" (Reachable).
+   - Đối tượng nào không thể kết nối tới bất kỳ GC Root nào (Unreachable) sẽ bị
+     coi là rác và đủ điều kiện để GC thu hồi bộ nhớ.
+
+3. Khái niệm Island of Isolation (Đảo cô lập):
+   - Nếu đối tượng A trỏ tới B, và B trỏ ngược lại A (vòng tham chiếu kín), nhưng
+     cả cụm {A, B} không có đường kết nối nào tới bất kỳ GC Root nào.
+   - JVM vẫn coi toàn bộ cụm {A, B} là unreachable và sẽ dọn sạch chúng ở lần GC sau.
+     Điều này giúp Java loại bỏ hoàn toàn lỗi rò rỉ bộ nhớ do vòng tham chiếu kín
+     (vốn là điểm yếu của cơ chế đếm tham chiếu - Reference Counting).
+
+4. Phân biệt "Đủ điều kiện GC" vs "Đã bị thu hồi":
+   - Đủ điều kiện GC (Eligible for GC): Đối tượng đã rơi vào trạng thái unreachable,
+     nhưng bộ nhớ của nó vẫn chưa được giải phóng.
+   - Đã bị thu hồi (Collected): GC đã thực sự chạy qua, giải phóng vùng RAM đó.
+   *Chú ý:* Việc gán biến `= null` chỉ giúp đối tượng đủ điều kiện GC, chứ không
+   áp đặt được thời gian JVM sẽ dọn dẹp nó.
+
+--------------------------------------------------------------------------------
+PHẦN IV: BỐN CẤP ĐỘ THAM CHIẾU (STRONG, SOFT, WEAK, PHANTOM REFERENCES)
+--------------------------------------------------------------------------------
+
+Để lập trình viên có thể tương tác và hướng dẫn GC xử lý bộ nhớ, gói `java.lang.ref`
+cung cấp 4 loại tham chiếu:
+
+1. Strong Reference (Tham chiếu mạnh):
+   - Khởi tạo: `User u = new User();` (Kiểu khai báo mặc định).
+   - Cơ chế GC: Đối tượng chắc chắn không bị GC dọn dẹp chừng nào vẫn còn ít nhất
+     một tham chiếu mạnh trỏ tới nó.
+
+2. Soft Reference (Tham chiếu mềm):
+   - Khởi tạo: `SoftReference<User> soft = new SoftReference<>(new User());`
+   - Cơ chế GC: JVM sẽ cố gắng giữ lại đối tượng. Nó chỉ bị dọn dẹp khi và chỉ
+     khi bộ nhớ RAM của JVM cạn kiệt (chuẩn bị xảy ra `OutOfMemoryError`).
+   - Ứng dụng: Rất phù hợp làm bộ nhớ đệm (Cache) cho các tài nguyên nặng (như ảnh,
+     dữ liệu tính toán phức tạp) để tối ưu RAM.
+
+3. Weak Reference (Tham chiếu yếu):
+   - Khởi tạo: `WeakReference<User> weak = new WeakReference<>(new User());`
+   - Cơ chế GC: GC sẽ dọn dẹp đối tượng này ngay lập tức ở lần quét rác tiếp theo,
+     bất kể bộ nhớ JVM còn dư nhiều hay ít, miễn là đối tượng không còn tham chiếu
+     mạnh nào trỏ tới.
+   - Ứng dụng: Làm Key trong `WeakHashMap`. Tránh rò rỉ bộ nhớ khi lưu trữ dữ liệu
+     metadata gắn liền với vòng đời của khóa.
+
+4. Phantom Reference (Tham chiếu bóng ma):
+   - Khởi tạo: `PhantomReference<User> phantom = new PhantomReference<>(new User(), queue);`
+   - Cơ chế GC: Hàm `get()` của Phantom Reference luôn trả về `null`. Nó chỉ dùng để
+     đưa đối tượng vào hàng đợi `ReferenceQueue` sau khi đối tượng đã thực sự bị xóa
+     khỏi bộ nhớ.
+   - Ứng dụng: Nhận thông báo xác nhận đối tượng đã bị xóa để thực hiện các thao tác
+     dọn dẹp tài nguyên ngoài Heap (Off-heap memory) một cách an toàn.
+
+--------------------------------------------------------------------------------
+PHẦN V: TẠI SAO KHAI TỬ finalize() & THAY THẾ BẰNG try-with-resources / Cleaner
+--------------------------------------------------------------------------------
+
+1. Lý do `finalize()` bị loại bỏ (Deprecated for removal từ Java 9/18):
+   - Không bảo đảm thời điểm chạy: JVM không hứa trước khi nào GC quét qua, nên tài
+     nguyên (như file lock, socket, database connection) có thể bị kẹt rất lâu.
+   - Không bảo đảm sẽ chạy: Nếu ứng dụng tắt đột ngột, hàm `finalize()` sẽ không
+     bao giờ được thực thi.
+   - Suy giảm hiệu năng nghiêm trọng: Các đối tượng ghi đè hàm `finalize()` cần
+     đến ít nhất 2 chu kỳ quét GC mới dọn dẹp xong.
+   - Nguy cơ bảo mật (Object Resurrection): Trong hàm `finalize()`, lập trình viên
+     vô tình gán tham chiếu `this` của đối tượng cho một biến tĩnh khác, giúp cứu
+     đối tượng sống lại từ cõi chết, làm hỏng hoàn toàn logic của GC.
+
+2. Giải pháp thay thế chính xác:
+   - Try-with-resources:
+     Sử dụng cho mọi tài nguyên cần đóng lập tức. Class tài nguyên phải triển khai
+     interface `AutoCloseable` (hoặc `Closeable`).
+     ```java
+     try (BufferedReader br = new BufferedReader(new FileReader("test.txt"))) {
+         System.out.println(br.readLine());
+     } // Hàm br.close() chắc chắn tự chạy ở đây, dù có xảy ra lỗi hay không.
+     ```
+   - Lớp an toàn dự phòng `java.lang.ref.Cleaner`:
+     Được dùng để đăng ký hành động dọn dẹp chạy ngầm trên một thread riêng biệt khi
+     đối tượng bị GC dọn. Nó thay thế `finalize()` làm lớp lưới bảo vệ cuối cùng
+     phòng trường hợp lập trình viên quên gọi hàm đóng tài nguyên thủ công.
+
+--------------------------------------------------------------------------------
+PHẦN VI: ĐỐI CHIẾU HỆ TƯ DUY KỸ THUẬT: PHP/LARAVEL vs JAVA/SPRING BOOT
+--------------------------------------------------------------------------------
+
+1. Hàm khởi tạo và hủy (Constructor & Destructor):
+   - PHP: Có hàm hủy xác định `__destruct()`. Khi một đối tượng không còn biến nào
+     trỏ tới (hoặc request kết thúc), PHP chạy ngay lập tức hàm `__destruct()` để
+     đóng file, kết nối. Thời điểm giải phóng là hoàn toàn xác định.
+   - Java: KHÔNG có hàm hủy (destructor). Java có bộ dọn rác GC tự động chạy không
+     đồng bộ. Bạn không bao giờ biết chính xác giây phút nào đối tượng bị hủy. Do
+     đó, tuyệt đối không dựa vào GC để giải phóng tài nguyên hệ thống, mà phải tự
+     đóng bằng `try-with-resources`.
+
+2. Cơ chế thu hồi bộ nhớ:
+   - PHP: Dùng cơ chế đếm tham chiếu (Reference Counting). Mỗi biến trỏ vào làm tăng
+     count thêm 1. Khi count về 0, RAM được thu hồi lập tức. Vòng lặp tham chiếu kín
+     phải nhờ đến bộ lọc chu kỳ (Cycle Collector) dọn dẹp sau.
+   - Java: Dùng thuật toán dò vết (Tracing GC) từ GC Roots. An toàn tự nhiên trước
+     vòng lặp tham chiếu.
+
+3. Vòng đời dữ liệu:
+   - PHP/Laravel: Mọi đối tượng tự động bị xóa sổ khi kết thúc request HTTP. Không có
+     khái niệm rò rỉ bộ nhớ dài hạn qua nhiều ngày.
+   - Java/Spring Boot: Các đối tượng tĩnh, cache, Spring Bean Singleton sống vĩnh
+     viễn cùng tiến trình ứng dụng. Rò rỉ bộ nhớ là mối nguy thường trực nếu viết code
+     thiếu kiểm soát tham chiếu.
+
+--------------------------------------------------------------------------------
+PHẦN VII: BẤY THƯỜNG GẶP VÀ KINH NGHIỆM THỰC TẾ (COMMON PITFALLS)
+--------------------------------------------------------------------------------
+
+1. Lỗi Override trong Constructor:
+   Mã nguồn lỗi kinh điển:
+   ```java
+   class Parent {
+       Parent() { init(); } // Gọi hàm khởi tạo
+       void init() { System.out.println("Parent Init"); }
+   }
+   class Child extends Parent {
+       String name = "Java";
+       @Override void init() { System.out.println("Child Init: " + name.length()); }
+   }
+   ```
+   *Kết quả:* Khi gọi `new Child()`, chương trình ném lỗi `NullPointerException`
+   ngay lập tức. Bởi vì constructor cha `Parent()` chạy trước khi biến `name` của
+   lớp con được gán giá trị `"Java"`. Lúc đó `name` vẫn đang là `null`.
+
+2. Rò rỉ bộ nhớ (Memory Leak) từ các biến tĩnh (Static Collections):
+   Nếu bạn tạo ra một `static List<User> users` để lưu thông tin tạm thời nhưng
+   quên gỡ bỏ phần tử khi dùng xong. Vì biến static là GC Root, toàn bộ danh sách
+   User này luôn là reachable, GC sẽ bỏ qua không dọn dẹp, gây cạn kiệt Heap RAM.
+
+3. Quên Constructor không tham số với các Framework:
+   Hibernate/JPA hoặc Jackson (thư viện parse JSON) tạo đối tượng bằng cách gọi
+   Reflection vào Constructor rỗng trước, sau đó mới gán dữ liệu vào các trường.
+   Nếu bạn tạo một Class chỉ có constructor có tham số mà thiếu constructor rỗng,
+   các thư viện này sẽ ném lỗi khởi tạo ở Runtime.
+
+4. Bỏ qua Constructor khi dùng Clone/Deserialization:
+   Nếu trong Constructor bạn viết logic kiểm tra dữ liệu:
+   ```java
+   public User(int age) {
+       if (age < 0) throw new IllegalArgumentException();
+       this.age = age;
+   }
+   ```
+   Nếu tạo đối tượng bằng cách deserialize một mảng byte độc hại chứa giá trị
+   `age = -99`, JVM vẫn khởi tạo thành công đối tượng User không hợp lệ này vì
+   quá trình này không đi qua Constructor.
+
+--------------------------------------------------------------------------------
+PHẦN VIII: SPRING BOOT & LIÊN HỆ THỰC TẾ PRODUCTION
+--------------------------------------------------------------------------------
+
+1. Spring Bean Lifecycle khác biệt hoàn toàn với Vòng đời Object Java:
+   - Một đối tượng Java thông thường biến mất khi không còn tham chiếu trỏ tới.
+   - Một Spring Bean được Spring IoC Container quản lý vòng đời chặt chẽ:
+     + Khởi tạo bằng Reflection.
+     + Thực hiện tiêm các Dependency (`@Autowired`).
+     + Chạy hàm thiết lập tùy biến `@PostConstruct`.
+     + Được lưu giữ trong ApplicationContext (nếu là Singleton scope - mặc định).
+       Nó sẽ không bao giờ bị GC dọn dẹp trong suốt thời gian ứng dụng chạy.
+     + Chạy hàm dọn dẹp tài nguyên `@PreDestroy` khi server tắt hoặc tắt context.
+
+2. Quản lý Connection Pool:
+   - Các kết nối đến Database (như HikariCP) được đóng gói trong các đối tượng
+     Connection. Khi bạn dùng `try-with-resources` gọi `connection.close()`, thực chất
+     kết nối vật lý không bị ngắt, mà đối tượng Connection đó tự giải phóng quyền
+     hạn và quay trở lại Connection Pool để tái sử dụng.
+   - Nếu bạn quên gọi `close()` (quên dùng try-with-resources), kết nối sẽ bị kẹt
+     ngoài Heap, Pool bị cạn kiệt dẫn đến sập ứng dụng (connection timeout).
+
+--------------------------------------------------------------------------------
+PHẦN IX: GIẢI THÍCH CHI TIẾT VÀ BÁM SÁT TOÀN BỘ 10 CÂU HỎI PHỎNG VẤN
+--------------------------------------------------------------------------------
+
+CÂU 1: Có những cách nào tạo một object trong Java? Cách nào không gọi Constructor?
+ĐÁP ÁN:
+Có 5 cách tạo đối tượng chính trong Java:
+1. Sử dụng toán tử `new` (ví dụ: `new MyClass()`). Gọi Constructor.
+2. Sử dụng Reflection (ví dụ: `MyClass.class.getDeclaredConstructor().newInstance()`).
+   Gọi Constructor.
+3. Sử dụng static factory method (ví dụ: `List.of(1, 2)`). Gián tiếp gọi Constructor
+   bên trong phương thức.
+4. Sử dụng phương thức `clone()`. KHÔNG gọi Constructor (sao chép trực tiếp dữ
+   liệu nhị phân từ vùng nhớ).
+5. Sử dụng Deserialization (giải tuần tự hóa thông qua `ObjectInputStream`).
+   KHÔNG gọi Constructor.
+
+CÂU 2: Thứ tự khởi tạo khi gọi `new` là gì (trong trường hợp không có kế thừa)?
+ĐÁP ÁN:
+Thứ tự khởi tạo của một lớp đơn lẻ như sau:
+1. Gán giá trị mặc định cho biến tĩnh (static field) (ví dụ: `0`, `false`, `null`).
+2. Chạy khối lệnh `static {}` và trình khởi tạo biến tĩnh theo thứ tự xuất hiện
+   trong mã nguồn (chỉ chạy một lần duy nhất khi nạp Class).
+3. Gán giá trị mặc định cho biến thực thể (instance field).
+4. Chạy hàm khởi tạo của lớp cha (`super()`).
+5. Chạy khối lệnh thực thể `{}` và trình khởi tạo biến thực thể theo thứ tự từ
+   trên xuống dưới trong code.
+6. Chạy phần thân (body) của Constructor của chính Class đó.
+
+CÂU 3: Khi nào một object bị Garbage Collector (GC) thu hồi?
+ĐÁP ÁN:
+- Một đối tượng đủ điều kiện để bị GC thu hồi khi nó rơi vào trạng thái Unreachable
+  (không thể chạm tới), nghĩa là không còn bất kỳ đường dẫn tham chiếu nào kết nối
+  nó với các nút gốc GC Roots (như biến cục bộ trên Stack, biến tĩnh trên Method area,
+  hoặc luồng đang chạy).
+- Tuy nhiên, thời điểm đối tượng thực sự bị xóa khỏi bộ nhớ vật lý hoàn toàn phụ thuộc
+  vào thuật toán lập lịch của JVM và GC. Java không đảm bảo đối tượng sẽ biến mất
+  ngay khi vừa hết tham chiếu.
+
+CÂU 4: Hàm hủy `__destruct` của PHP tương ứng với thành phần nào ở Java?
+ĐÁP ÁN:
+- Java KHÔNG có bất kỳ thành phần nào tương đương với hàm hủy xác định `__destruct`
+  của PHP.
+- PHP sử dụng cơ chế đếm tham chiếu (Reference Counting), đối tượng bị hủy ngay khi
+  không còn biến nào trỏ tới. Java dùng Tracing GC chạy bất đồng bộ, việc hủy đối tượng
+  là phi xác định (non-deterministic).
+- Để dọn dẹp tài nguyên trong Java một cách xác định và kịp thời, bắt buộc phải sử
+  dụng cấu trúc `try-with-resources` với các lớp triển khai interface `AutoCloseable`,
+  không được trông chờ vào máy ảo JVM dọn hộ bộ nhớ.
+
+CÂU 5: Immutability (tính bất biến) mang lại lợi ích gì cho đối tượng?
+ĐÁP ÁN:
+Một đối tượng bất biến (ví dụ như lớp `String`, hoặc class có mọi trường `final` và
+không có setter) đem lại các lợi ích lớn sau:
+1. An toàn đa luồng tự nhiên (Thread-safe): Vì dữ liệu không bao giờ thay đổi, nhiều
+   thread có thể truy cập đồng thời mà không lo lắng về Race Condition hay cần đồng
+   bộ hóa.
+2. Dễ suy luận và bảo trì code: Trạng thái của đối tượng được đảm bảo cố định suốt
+   vòng đời.
+3. An toàn khi làm khóa: Rất thích hợp làm Key trong HashMap hoặc phần tử trong HashSet
+   vì mã băm (Hashcode) của nó không bao giờ thay đổi.
+4. Đảm bảo tính hợp lệ: Chỉ cần validate dữ liệu một lần duy nhất trong constructor
+   khi khởi tạo, loại bỏ khả năng đối tượng bị thay đổi sang trạng thái không hợp lệ.
+
+CÂU 6: Trình bày đầy đủ thứ tự khởi tạo khi có quan hệ kế thừa cha - con.
+ĐÁP ÁN:
+Khi khởi tạo đối tượng lớp con `Con` kế thừa từ lớp cha `Cha` lần đầu tiên:
+1. Chạy các khối tĩnh (static) của lớp `Cha`.
+2. Chạy các khối tĩnh (static) của lớp `Con`.
+(Các lần khởi tạo tiếp theo bỏ qua hai bước static trên)
+3. Chạy các khối khởi tạo biến thực thể (instance initializer block) của lớp `Cha`.
+4. Chạy phần thân Constructor của lớp `Cha`.
+5. Chạy các khối khởi tạo biến thực thể (instance initializer block) của lớp `Con`.
+6. Chạy phần thân Constructor của lớp `Con`.
+Quy tắc: Toàn bộ static (cha -> con) chạy trước, sau đó đến chuỗi thực thể (cha -> con).
+
+CÂU 7: Phân biệt 4 loại reference (Strong, Soft, Weak, Phantom) và thời điểm GC dọn dẹp.
+ĐÁP ÁN:
+1. Strong Ref: Mặc định. Chỉ bị dọn khi đối tượng không còn tham chiếu mạnh nào và
+   trở thành unreachable.
+2. Soft Ref: Chỉ bị dọn dẹp khi JVM rơi vào tình trạng sắp hết bộ nhớ RAM (sắp xảy
+   ra OutOfMemoryError). Thường dùng làm cache nhẹ.
+3. Weak Ref: Bị dọn dẹp ngay lập tức ở lần quét GC tiếp theo nếu không còn tham
+   chiếu mạnh nào trỏ tới. Thường dùng trong WeakHashMap.
+4. Phantom Ref: Hàm `get()` luôn trả về `null`. Nó chỉ dùng để phát tín hiệu vào
+   ReferenceQueue báo rằng đối tượng đã thực sự bị xóa để tiến hành giải phóng tài
+   nguyên ngoài Heap.
+
+CÂU 8: Tại sao không nên sử dụng hàm `finalize()`? Thay thế bằng gì?
+ĐÁP ÁN:
+- Hàm `finalize()` bị khai tử vì: Không đảm bảo thời điểm chạy, có thể không chạy nếu
+  chương trình tắt trước, làm suy giảm nghiêm trọng hiệu năng của GC (mất 2 chu kỳ quét),
+  nuốt exception ngoài ý muốn và có nguy cơ gây lỗi bảo mật (hồi sinh đối tượng trái phép).
+- Thay thế: Sử dụng `try-with-resources` kết hợp với interface `AutoCloseable` để đóng
+  tài nguyên chủ động. Có thể dùng thêm `java.lang.ref.Cleaner` làm lớp lưới bảo mật
+  dự phòng cuối cùng.
+
+CÂU 9: Vì sao vòng tham chiếu (A trỏ B và B trỏ A) không gây rò rỉ bộ nhớ ở Java
+       nhưng lại có thể gây lỗi ở các phiên bản PHP cũ?
+ĐÁP ÁN:
+- PHP truyền thống sử dụng thuật toán đếm tham chiếu (Reference Counting). Khi A và B
+  trỏ chéo nhau, bộ đếm tham chiếu của mỗi đối tượng luôn lớn hơn hoặc bằng 1, khiến
+  PHP lầm tưởng chúng vẫn đang được sử dụng và không giải phóng RAM.
+- Java sử dụng thuật toán Tracing GC bắt đầu dò vết từ các nút gốc GC Roots. Nếu cụm
+  tham chiếu xoay vòng A <-> B hoàn toàn bị cô lập khỏi các GC Roots (Island of Isolation),
+  JVM sẽ phát hiện chúng không thể kết nối tới roots và tự động quét dọn cả cụm.
+
+CÂU 10: Một biến static Map đóng vai trò làm Cache đang gây tăng bộ nhớ liên tục
+        trên Production. Phân tích nguyên nhân và đề xuất hướng xử lý.
+ĐÁP ÁN:
+- Nguyên nhân: Biến `static` là một GC Root. Do đó, tất cả các Entry (Key - Value) được
+  đưa vào Map đều có đường dẫn kết nối trực tiếp tới GC Root và luôn được coi là
+  Reachable. GC sẽ không bao giờ thu hồi bộ nhớ của chúng, khiến bộ nhớ phình to
+  theo thời gian dẫn đến tràn Heap.
+- Hướng xử lý:
+  1. Sử dụng `WeakHashMap` thay thế nếu muốn Key tự động bị xóa khi không còn tham
+     chiếu mạnh nào bên ngoài Map trỏ tới.
+  2. Triển khai thuật toán trục xuất Cache (Eviction Policy) giới hạn số lượng phần
+     tử tối đa (LRU - Least Recently Used) hoặc giới hạn thời gian tồn tại (TTL - Time
+     To Live) bằng cách tích hợp thư viện chuyên dụng như Caffeine Cache hoặc Guava.
+
+--------------------------------------------------------------------------------
+PHẦN X: NHẬT KÝ THỰC HÀNH VÀ MINI PROJECT NGÀY 03
+--------------------------------------------------------------------------------
+
+1. Các tệp thực hành cần triển khai:
+   - `InitOrderDemo.java`: Kiểm chứng thứ tự khởi tạo tĩnh và thực thể của quan
+     hệ kế thừa cha Animal - con Dog.
+   - `WeakRefDemo.java`: Minh họa cơ chế dọn dẹp tức thì của WeakReference khi chạy
+     `System.gc()`.
+   - `ResourceDemo.java`: Triển khai AutoCloseable để kiểm chứng try-with-resources
+     tự động đóng tài nguyên.
+
+2. Cải tiến thiết kế Mini Project (Auction API) hướng Bất biến (Immutability):
+   - Thiết kế Class `Bid.java` bất biến hoàn toàn: Không cung cấp hàm Setter, các
+     trường `bidder`, `amount`, `placedAt` được đánh dấu `final`, giá trị được gán
+     và kiểm tra (validate) duy nhất một lần tại Constructor.
+   - Thiết kế Class `Auction.java` đóng kín trạng thái (Encapsulation): Trả về danh
+     sách bid dưới dạng bản sao bất biến `List.copyOf(bids)` để ngăn chặn người ngoài
+     sửa đổi danh sách nội bộ của phiên đấu giá.
+
+================================================================================
+KẾT THÚC GHI CHÚ NGÀY 03 - ĐÃ HOÀN THÀNH TOÀN BỘ LÝ THUYẾT & 10 CÂU HỎI PHỎNG VẤN
+================================================================================
