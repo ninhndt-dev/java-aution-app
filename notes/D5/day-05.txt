@@ -1,0 +1,711 @@
+================================================================================
+GHI CHÚ HỌC TẬP CHI TIẾT - NGÀY 05: STRING POOL (KHO CHỨA CHUỖI HẰNG)
+================================================================================
+
+Tài liệu này tổng hợp toàn bộ lý thuyết chuyên sâu về String trong Java: vì sao
+String bất biến (immutable), cơ chế String Constant Pool và intern(), phân biệt
+literal với new String(), khác nhau giữa == và equals(), so sánh String vs
+StringBuilder vs StringBuffer, cái bẫy hiệu năng O(n²) khi nối chuỗi trong vòng
+lặp, cú pháp Text Block và đối chiếu chi tiết với cách PHP/Laravel xử lý chuỗi.
+
+--------------------------------------------------------------------------------
+PHẦN I: STRING LÀ IMMUTABLE - NỀN TẢNG CỦA MỌI THỨ
+--------------------------------------------------------------------------------
+
+Trong Java, một khi đối tượng `String` đã được tạo ra thì nội dung của nó KHÔNG BAO
+GIỜ thay đổi nữa. Mọi thao tác trông giống như "sửa chuỗi" thực chất đều tạo ra một
+đối tượng `String` HOÀN TOÀN MỚI.
+
+1. Bản chất của tính bất biến:
+   - Ví dụ minh họa:
+     ```java
+     String s = "Java";
+     s = s.concat(" 21");   // KHÔNG sửa "Java", mà tạo object mới "Java 21" rồi cho s trỏ tới
+     // Object "Java" cũ vẫn còn nguyên trong bộ nhớ (cho tới khi bị GC dọn)
+     ```
+   - Sau lệnh `concat`, đối tượng chuỗi gốc "Java" vẫn nằm yên trong bộ nhớ. Biến `s`
+     chỉ đơn giản được chuyển sang trỏ tới đối tượng mới "Java 21". Đối tượng cũ chỉ
+     biến mất khi bị Garbage Collector dọn dẹp.
+
+2. Cơ chế kỹ thuật đảm bảo tính bất biến:
+   - Bên trong, lớp `String` bọc một mảng `byte[]` (trước Java 9 là `char[]`) được
+     khai báo `private final`. Vì là `private` nên không thể truy cập từ bên ngoài,
+     và vì là `final` nên không thể gán lại mảng khác.
+   - Bản thân class `String` cũng được đánh dấu `final`, nghĩa là không ai có thể kế
+     thừa `String` để cố tình ghi đè các method nhằm phá vỡ tính bất biến.
+   - Không có bất kỳ method nào trong `String` cho phép ghi đè (mutate) mảng dữ liệu
+     bên trong.
+
+3. Bốn lý do cốt lõi vì sao Java thiết kế String bất biến:
+
+   (1) Bảo mật (Security):
+       String thường được dùng làm các tham số nhạy cảm: tên file, đường dẫn, URL,
+       tên class cho ClassLoader, username/host trong chuỗi kết nối Database. Nếu
+       String là khả biến, một thread khác có thể "đổi ruột" giá trị SAU KHI đã kiểm
+       tra quyền truy cập (đây là kiểu tấn công TOCTOU - Time Of Check To Time Of
+       Use). Khi String bất biến, đã kiểm tra rồi thì không ai sửa được nữa, đảm bảo
+       an toàn tuyệt đối.
+
+   (2) Cache hashCode:
+       Giá trị `hashCode()` của String được tính ĐÚNG MỘT LẦN rồi cache lại trong một
+       field riêng. Vì nội dung chuỗi không bao giờ đổi nên mã băm cũng không bao giờ
+       đổi, do đó không cần tính lại. Đây chính là lý do String là KEY LÝ TƯỞNG cho
+       `HashMap`/`HashSet`: tra cứu cực nhanh vì hash đã được lưu sẵn.
+
+   (3) An toàn đa luồng (Thread-safe):
+       Tính bất biến đồng nghĩa với việc thread-safe một cách mặc nhiên. Nhiều thread
+       có thể cùng đọc một đối tượng String mà KHÔNG cần `synchronized`, không lo race
+       condition, vì không thread nào có thể thay đổi nội dung chuỗi.
+
+   (4) Cho phép tồn tại String Pool:
+       Vì String không thể bị sửa, nhiều biến khác nhau có thể CHIA SẺ CHUNG một đối
+       tượng trong pool mà không sợ biến này vô tình sửa làm hỏng biến kia. (Chi tiết
+       ở Phần II.)
+
+* Mẹo nhớ cốt lõi: "Immutable là NGUYÊN NHÂN, String Pool là HỆ QUẢ". Chính vì String
+  không thể bị sửa nên Java mới dám gom các literal trùng nhau lại để dùng chung. Nếu
+  String khả biến thì việc chia sẻ này sẽ là một thảm họa.
+
+--------------------------------------------------------------------------------
+PHẦN II: STRING CONSTANT POOL - VÙNG CACHE LITERAL
+--------------------------------------------------------------------------------
+
+String Pool (còn gọi là String Constant Pool hoặc String Intern Pool) là một vùng
+nhớ đặc biệt do JVM quản lý, dùng để CACHE LẠI các String literal. Mục tiêu: literal
+nào trùng nội dung thì chỉ tồn tại MỘT đối tượng duy nhất, qua đó tiết kiệm bộ nhớ.
+
+1. Cơ chế chia sẻ object trong pool:
+   ```java
+   String a = "hello";
+   String b = "hello";   // KHÔNG tạo object mới — JVM thấy "hello" đã có trong pool, trả về cùng reference
+   // a và b trỏ tới CÙNG một object
+   System.out.println(a == b);   // true
+   ```
+   Khi gặp literal `"hello"` lần thứ hai, JVM kiểm tra pool, thấy đã tồn tại nên trả
+   về đúng reference cũ thay vì cấp phát object mới. Vì vậy `a == b` cho kết quả
+   `true` (cùng địa chỉ ô nhớ).
+
+2. String Pool nằm ở đâu trong bộ nhớ?
+   - Từ Java 7 trở đi: String Pool nằm trong HEAP (vùng nhớ chính, được GC dọn dẹp).
+     Nhờ đó pool có thể lớn và các literal không còn dùng tới có thể bị thu hồi như
+     mọi object thông thường.
+   - Trước Java 7 (Java 6 trở về trước): pool nằm trong PermGen - một vùng cố định,
+     kích thước nhỏ, rất dễ bị tràn (gây lỗi `OutOfMemoryError: PermGen space`) nếu
+     gọi `intern()` quá nhiều. Đây cũng là một trong các lý do PermGen bị loại bỏ và
+     thay bằng Metaspace từ Java 8.
+
+3. Sơ đồ minh họa pool và heap thường:
+   - Các literal "hello" (a, b) cùng trỏ về MỘT object duy nhất trong String Pool.
+   - Đối tượng tạo bằng `new String("hello")` (biến c) lại nằm ở vùng heap thường,
+     NGOÀI pool, là một object hoàn toàn riêng biệt dù nội dung giống hệt.
+
+   ```
+                             HEAP
+      ┌──────────────────────────────────────────────────┐
+      │   String Constant Pool                            │
+      │   ┌──────────────┐                                │
+      │   │  "hello"     │ ◄──── a                         │
+      │   │  (1 object)  │ ◄──── b                         │
+      │   └──────────────┘                                │
+      │                                                   │
+      │   (vùng heap thường, ngoài pool)                  │
+      │   ┌──────────────┐                                │
+      │   │  "hello"     │ ◄──── c = new String("hello")  │
+      │   │  (object MỚI)│                                │
+      │   └──────────────┘                                │
+      └──────────────────────────────────────────────────┘
+   ```
+
+--------------------------------------------------------------------------------
+PHẦN III: LITERAL vs new String() - TẠO RA BAO NHIÊU OBJECT
+--------------------------------------------------------------------------------
+
+Đây là phần "ăn điểm" khi đi phỏng vấn, phải phân biệt thật rạch ròi giữa cách dùng
+literal và cách dùng từ khóa `new`.
+
+1. Khác biệt cơ bản:
+   ```java
+   String x = "abc";              // (1) lấy/đặt vào POOL
+   String y = "abc";              // (2) lấy lại từ pool → CÙNG object với x
+   String z = new String("abc");  // (3) LUÔN tạo object MỚI trên heap (ngoài pool)
+   ```
+   - Với literal `"abc"`: JVM tra cứu pool, nếu đã có thì trả về reference cũ, nếu
+     chưa có thì tạo mới và đưa vào pool. Do đó `x == y` cho kết quả TRUE.
+   - Với `new String("abc")`: từ khóa `new` BẮT BUỘC cấp phát một object mới trên
+     heap, hoàn toàn tách biệt khỏi pool. Do đó `x == z` cho kết quả FALSE, dù nội
+     dung giống hệt nhau.
+
+2. Câu hỏi bẫy kinh điển - new String("abc") tạo ra bao nhiêu object?
+   - Đáp án: 1 HOẶC 2 object.
+   - Literal `"abc"` cần một object trong pool. Nếu pool CHƯA CÓ "abc" thì JVM phải
+     tạo thêm 1 object trong pool, cộng với 1 object heap do `new` tạo ra, tổng cộng
+     là 2 object.
+   - Nếu pool ĐÃ CÓ SẴN "abc" từ trước thì chỉ tạo thêm đúng 1 object mới trên heap
+     (object pool được tái dùng), tổng cộng là 1 object.
+   - Lưu ý: từ khóa `new` luôn tạo ra ĐÚNG 1 object trên heap, biến số (1 hay 2) là do
+     literal trong pool có sẵn hay chưa.
+
+3. Sơ đồ tham chiếu tổng quát:
+   ```
+      x ──┐
+          ├──►  ┌───────────────┐   (trong String Pool)
+      y ──┘     │   "abc"       │
+                └───────────────┘
+
+      z ───────►  ┌───────────────┐   (object riêng trên heap, NGOÀI pool)
+                  │   "abc"       │
+                  └───────────────┘
+
+      x == y  →  true   (cùng object pool)
+      x == z  →  false  (khác object)
+      x.equals(z) → true (cùng NỘI DUNG)
+   ```
+
+4. Phân biệt == và equals():
+   - Toán tử `==` so sánh REFERENCE: kiểm tra hai biến có trỏ vào cùng một ô nhớ hay
+     không.
+   - Phương thức `.equals()` (lớp String đã override) so sánh NỘI DUNG: so từng ký tự
+     một.
+   - QUY TẮC VÀNG: Khi so sánh chuỗi trong Java, LUÔN dùng `equals()`. Để tránh
+     NullPointerException nên viết literal đứng trước: `"abc".equals(bien)`, hoặc dùng
+     `Objects.equals(a, b)` (an toàn với null). Dùng `==` cho String gần như luôn là
+     bug, chỉ dùng khi bạn CỐ Ý so reference.
+
+5. intern() làm gì?
+   - `s.intern()` đưa nội dung của `s` vào pool (nếu chưa có) và TRẢ VỀ reference của
+     object trong pool. Nhờ đó ta có thể "kéo" một String tạo bằng `new` về dùng chung
+     với literal:
+     ```java
+     String z = new String("abc");
+     String w = z.intern();         // w trỏ tới object "abc" TRONG pool
+     System.out.println(z == w);    // false  (z là object heap riêng)
+     System.out.println("abc" == w);// true   (w chính là object pool)
+     ```
+   - Cảnh báo: `intern()` hữu ích để gom các chuỗi lặp lại (ví dụ khi đọc hàng triệu
+     dòng có nhiều giá trị trùng nhau) nhằm tiết kiệm RAM. Tuy nhiên lạm dụng `intern()`
+     dễ làm chậm chương trình và tốn vùng pool. Đa số trường hợp KHÔNG cần tự gọi
+     `intern()`, hãy để JVM tự lo.
+
+--------------------------------------------------------------------------------
+PHẦN IV: STRING vs STRINGBUILDER vs STRINGBUFFER
+--------------------------------------------------------------------------------
+
+Vì String bất biến, mỗi lần "nối" chuỗi là tạo ra một object mới, rất tốn kém nếu lặp
+lại nhiều lần. Java cung cấp hai lớp KHẢ BIẾN để xây chuỗi hiệu quả hơn.
+
+1. So sánh ba lớp chi tiết:
+
+   (1) String:
+       - Khả biến? KHÔNG, hoàn toàn bất biến.
+       - Thread-safe? CÓ (chính vì nó bất biến).
+       - Tốc độ: không bàn (mỗi thao tác tạo object mới).
+       - Khi nào dùng: cho các giá trị cố định, làm key trong map/set, truyền tham số.
+
+   (2) StringBuilder:
+       - Khả biến? CÓ, sửa trực tiếp trên buffer.
+       - Thread-safe? KHÔNG (các method không `synchronized`).
+       - Tốc độ: NHANH NHẤT.
+       - Khi nào dùng: MẶC ĐỊNH khi cần xây/nối chuỗi trong phạm vi một thread.
+
+   (3) StringBuffer:
+       - Khả biến? CÓ.
+       - Thread-safe? CÓ (mọi method đều `synchronized`).
+       - Tốc độ: chậm hơn StringBuilder do phải khóa (lock).
+       - Khi nào dùng: chỉ khi THỰC SỰ có nhiều thread cùng ghi vào MỘT buffer chung.
+
+2. Ví dụ dùng StringBuilder:
+   ```java
+   StringBuilder sb = new StringBuilder();
+   sb.append("Item: ").append("Đồng hồ cổ");   // sửa TRỰC TIẾP trên buffer, không tạo object mới mỗi lần
+   sb.append(" | Giá: ").append(1500);
+   String result = sb.toString();                // chỉ tạo String 1 lần ở cuối
+   ```
+   StringBuilder ghi đè trực tiếp vào vùng đệm nội bộ và chỉ tạo ra đối tượng String
+   duy nhất một lần khi gọi `toString()` ở cuối.
+
+3. Quy tắc thực dụng:
+   - Hầu hết code chạy trong một thread, vì vậy hãy dùng StringBuilder làm lựa chọn
+     mặc định. Chỉ dùng StringBuffer khi bạn CHIA SẺ một đối tượng builder giữa nhiều
+     thread (rất hiếm gặp; thông thường ta thiết kế để mỗi thread có builder riêng,
+     vẫn nhanh hơn). Về bản chất, StringBuffer chính là "StringBuilder cộng thêm
+     `synchronized`".
+
+--------------------------------------------------------------------------------
+PHẦN V: NỐI CHUỖI TRONG VÒNG LẶP - CÁI BẪY HIỆU NĂNG O(n²)
+--------------------------------------------------------------------------------
+
+Đây là một trong những lỗi hiệu năng phổ biến và nguy hiểm nhất, đặc biệt với lập
+trình viên đến từ PHP.
+
+1. Cách SAI - nối bằng += trong vòng lặp:
+   ```java
+   // ❌ SAI: nối bằng += trong vòng lặp
+   String s = "";
+   for (int i = 0; i < 100_000; i++) {
+       s += i;   // mỗi vòng tạo MỘT String mới = copy lại toàn bộ ký tự cũ + thêm phần mới
+   }
+   ```
+   - Mỗi lần thực hiện `s += i`, JVM phải tạo một object mới chứa toàn bộ nội dung cũ
+     rồi cộng thêm phần mới. Vòng lặp thứ `n` phải copy khoảng `n` ký tự.
+   - Tổng công việc là `1 + 2 + ... + n ≈ n²/2`, tức độ phức tạp O(n²).
+   - Với 100.000 vòng lặp, đó là HÀNG TỶ phép copy ký tự và hàng trăm nghìn object rác
+     cho GC phải dọn dẹp.
+
+2. Cách ĐÚNG - dùng StringBuilder:
+   ```java
+   // ✅ ĐÚNG: dùng StringBuilder
+   StringBuilder sb = new StringBuilder();
+   for (int i = 0; i < 100_000; i++) {
+       sb.append(i);   // append vào buffer khả biến, KHÔNG copy lại từ đầu, độ phức tạp ~O(n)
+   }
+   String s = sb.toString();
+   ```
+   StringBuilder ghi nối vào vùng đệm khả biến, không phải copy lại từ đầu mỗi vòng,
+   nên độ phức tạp chỉ còn khoảng O(n).
+
+3. Lưu ý tinh tế về tối ưu của compiler:
+   - Nối chuỗi ĐƠN GIẢN, một dòng như `"a" + b + "c"` KHÔNG phải vấn đề. Từ Java 9,
+     compiler dịch nó qua `invokedynamic` + `StringConcatFactory` rất tối ưu (trước
+     Java 9 thì compiler tự thay bằng `StringBuilder`).
+   - Tuy nhiên phép tối ưu này KHÔNG vượt qua được ranh giới vòng lặp: bên trong loop,
+     mỗi lần lặp là một biểu thức `+` riêng biệt, vẫn sinh ra object trung gian. Vì
+     vậy quy tắc bất di bất dịch: TRONG VÒNG LẶP LUÔN DÙNG StringBuilder.
+
+--------------------------------------------------------------------------------
+PHẦN VI: TEXT BLOCK - CHUỖI NHIỀU DÒNG (JAVA 15+)
+--------------------------------------------------------------------------------
+
+Trước đây, viết JSON/SQL/HTML nhiều dòng trong Java rất khổ vì phải dùng `\n` và phải
+escape các dấu nháy kép `"`. Từ Java 15 (chính thức), Text Block sử dụng ba dấu nháy
+kép `"""` giải quyết vấn đề này một cách gọn gàng.
+
+1. Cú pháp và ví dụ:
+   ```java
+   String json = """
+           {
+               "item": "Đồng hồ cổ",
+               "currentPrice": 1500,
+               "bids": 7
+           }
+           """;
+   ```
+
+2. Ba ưu điểm chính của Text Block:
+   - Giữ nguyên xuống dòng và định dạng, KHÔNG cần ký tự `\n`.
+   - KHÔNG cần escape các dấu nháy kép `"` bên trong.
+   - JVM tự động "cắt lề" (incidental whitespace - khoảng trắng phụ trợ) dựa trên dòng
+     thụt vào ít nhất, nên ta có thể thụt code cho đẹp mà chuỗi kết quả vẫn sạch.
+
+3. Ứng dụng thực tế:
+   - Cực kỳ hữu ích cho: câu lệnh SQL dài, payload JSON dùng để test, template HTML
+     hoặc email.
+   - Bản chất nó vẫn chỉ là một `String` bất biến bình thường, chỉ là CÁCH VIẾT tiện
+     lợi hơn mà thôi.
+
+--------------------------------------------------------------------------------
+PHẦN VII: ĐỐI CHIẾU HỆ TƯ DUY KỸ THUẬT: PHP/LARAVEL vs JAVA
+--------------------------------------------------------------------------------
+
+Cơ chế xử lý chuỗi của hai ngôn ngữ khác nhau CĂN BẢN, cần neo vào kiến thức PHP đã
+biết nhưng phải hết sức cẩn thận.
+
+1. Tính chất chuỗi:
+   - PHP: Khả biến (mutable), có thể sửa tại chỗ ví dụ `$s[0] = 'X';`.
+   - Java: Bất biến (immutable), không thể sửa được nội dung.
+
+2. Cơ chế bộ nhớ:
+   - PHP: Copy-on-write. Khi gán `$b = $a` thì chưa copy ngay, chỉ thực sự copy khi
+     một trong hai bên bị sửa.
+   - Java: Không có copy-on-write. Phép gán chỉ là copy REFERENCE (cùng trỏ tới một
+     object).
+
+3. Toán tử nối chuỗi:
+   - PHP: Dùng dấu chấm `.` và `.=` (ví dụ `$s .= "x";`).
+   - Java: Dùng dấu cộng `+` và `+=`.
+
+4. String Pool:
+   - PHP: KHÔNG có pool literal kiểu Java.
+   - Java: Có String Constant Pool nằm trong Heap.
+
+5. Xây chuỗi lớn:
+   - PHP: Nối bằng `.=` (PHP tối ưu được vì chuỗi mutable), hoặc dùng `implode()`.
+   - Java: Phải dùng StringBuilder (vì String bất biến).
+
+6. So sánh NỘI DUNG:
+   - PHP: `==` (lỏng, có ép kiểu) hoặc `===` (chặt, đúng cả kiểu).
+   - Java: `.equals()`.
+
+7. So sánh DANH TÍNH/KIỂU:
+   - PHP: `===` so cả kiểu lẫn giá trị.
+   - Java: `==` so REFERENCE (địa chỉ object).
+
+8. Cái bẫy chuyển ngữ quan trọng nhất - so sánh chuỗi:
+   - Trong PHP:
+     ```php
+     $a = "abc";
+     $b = "abc";
+     var_dump($a == $b);   // true  — so giá trị
+     var_dump($a === $b);  // true  — so giá trị + kiểu (đều là string)
+     ```
+   - Trong Java (cùng ý đồ "so giá trị" nhưng PHẢI dùng equals):
+     ```java
+     String a = new String("abc");
+     String b = new String("abc");
+     System.out.println(a == b);        // false ❗ — == so REFERENCE, hai object khác nhau
+     System.out.println(a.equals(b));   // true   — equals so NỘI DUNG
+     ```
+   - Lỗi kinh điển của dev PHP mới sang Java: dùng `==` để so chuỗi vì tưởng nó giống
+     `===` của PHP. Nhưng trong PHP `===` so giá trị + kiểu, còn trong Java `==` so
+     ĐỊA CHỈ Ô NHỚ. Hai cái hoàn toàn khác nhau. Ở Java, "so giá trị" chính là dùng
+     `equals()`.
+
+9. Hệ quả tư duy về hiệu năng:
+   - Ở PHP, bạn vô tư viết `$s .= ...` trong vòng lặp vì chuỗi mutable cộng với
+     copy-on-write nên rất rẻ.
+   - Ở Java, viết `s += ...` trong vòng lặp lại là O(n²) vì mỗi lần tạo một object
+     mới. Đây là khác biệt sống còn về hiệu năng, bắt buộc phải đổi thói quen sang
+     StringBuilder.
+
+--------------------------------------------------------------------------------
+PHẦN VIII: BẪY THƯỜNG GẶP VÀ KINH NGHIỆM THỰC TẾ (COMMON PITFALLS)
+--------------------------------------------------------------------------------
+
+1. So sánh chuỗi bằng ==:
+   Đây là lỗi phổ biến nhất của dev mới, đặc biệt là từ PHP sang. Toán tử `==` so
+   reference chứ không so nội dung, nên khi gặp `new String` hoặc chuỗi tạo lúc runtime
+   sẽ cho kết quả `false` dù nội dung giống hệt. LUÔN dùng `equals()`.
+
+2. equals() gây NullPointerException:
+   Lời gọi `bien.equals("abc")` sẽ ném NPE nếu `bien == null`. Hãy viết ngược lại
+   `"abc".equals(bien)` (literal không bao giờ null) hoặc dùng `Objects.equals(a, b)`
+   (an toàn với null ở cả hai phía).
+
+3. Nối chuỗi bằng += trong vòng lặp:
+   Tưởng vô hại như PHP, nhưng thực chất là O(n²) và sinh rất nhiều rác cho GC. Bắt
+   buộc dùng StringBuilder trong mọi vòng lặp nối chuỗi.
+
+4. Tưởng các method replace/trim/toUpperCase "sửa" chuỗi gốc:
+   Những method này TRẢ VỀ một String mới, chuỗi gốc hoàn toàn không đổi. Viết
+   `s.trim();` mà không gán lại (`s = s.trim();`) là vô nghĩa - kết quả bị vứt đi.
+
+5. Lạm dụng intern():
+   Gọi `intern()` bừa bãi cho hàng triệu chuỗi KHÁC NHAU không giúp ích gì mà còn làm
+   phình pool và chậm chương trình. Chỉ dùng khi có nhiều chuỗi TRÙNG LẶP cần gom lại.
+
+6. Dùng StringBuffer "cho chắc":
+   Hầu hết trường hợp chỉ chạy trong một thread, dùng StringBuffer chỉ làm chậm vì
+   khóa thừa không cần thiết. Lựa chọn mặc định nên luôn là StringBuilder.
+
+7. Hiểu nhầm về final của biến String:
+   `final` của một biến String là về REFERENCE (không cho gán lại biến), không liên
+   quan tới nội dung. Thực ra nội dung String VỐN ĐÃ bất biến rồi. Nhầm lẫn giữa "biến
+   String" và "nội dung String" dễ dẫn tới hiểu sai khi đọc code.
+
+--------------------------------------------------------------------------------
+PHẦN IX: SPRING BOOT & LIÊN HỆ THỰC TẾ PRODUCTION
+--------------------------------------------------------------------------------
+
+1. Log và việc nối chuỗi (String concatenation):
+   - Tránh viết `log.debug("user=" + user + " order=" + order)` - chuỗi vẫn bị ghép
+     KỂ CẢ KHI log level đang tắt, gây lãng phí.
+   - Dùng placeholder của SLF4J: `log.debug("user={} order={}", user, order)` - chuỗi
+     chỉ được ghép khi thực sự cần in ra.
+
+2. String làm key trong @Cacheable, HashMap, Redis:
+   Nhờ String bất biến cộng với việc cache hashCode mà dùng String làm cache key
+   (Caffeine, Redis) cực nhanh và an toàn. Hiểu điều này giúp bạn yên tâm chọn String
+   làm key.
+
+3. intern() để tiết kiệm RAM khi parse dữ liệu lớn:
+   Khi đọc file CSV/JSON hàng triệu dòng có nhiều giá trị lặp (mã quốc gia, trạng
+   thái...), gọi `intern()` các giá trị này sẽ gom về một object, giảm đáng kể bộ nhớ.
+   Nhưng phải ĐO trước khi tối ưu, đừng tối ưu mù.
+
+4. Text Block cho SQL/JSON trong test và config:
+   Viết native query (`@Query`), payload test (`MockMvc`) hay JSON mẫu bằng Text Block
+   giúp code dễ đọc và ít lỗi escape hơn nhiều.
+
+5. Dữ liệu nhạy cảm dùng char[], không dùng String:
+   Mật khẩu nên giữ trong `char[]` để có thể XÓA THỦ CÔNG sau khi dùng (ví dụ
+   `Arrays.fill(pwd, '\0')`). Vì String bất biến và có thể nằm trong pool, nó tồn tại
+   trong bộ nhớ LÂU, dễ bị lộ qua heap dump. Đây cũng là lý do
+   `JPasswordField.getPassword()` trả về `char[]`.
+
+6. StringBuilder khi build response/CSV/report động:
+   Khi ghép báo cáo, export CSV, hay dựng message lớn theo vòng lặp, luôn dùng
+   StringBuilder.
+
+--------------------------------------------------------------------------------
+PHẦN X: GIẢI THÍCH CHI TIẾT VÀ BÁM SÁT TOÀN BỘ 9 CÂU HỎI PHỎNG VẤN
+--------------------------------------------------------------------------------
+
+CÂU 1: Vì sao String trong Java là immutable (bất biến)?
+ĐÁP ÁN:
+Có bốn lý do cốt lõi:
+1. Bảo mật (Security): String hay được dùng làm path, URL, tên class, tham số kết nối
+   Database. Bất biến giúp đảm bảo sau khi đã kiểm tra quyền thì không ai sửa được
+   nữa (chống tấn công TOCTOU - kiểm tra một đằng, dùng một nẻo).
+2. Cache hashCode: hashCode được tính một lần rồi cache lại, dùng nhiều lần mà không
+   phải tính lại, biến String thành key cực nhanh cho HashMap/HashSet.
+3. Thread-safe: vì nội dung không đổi nên nhiều thread đọc chung một String không cần
+   đồng bộ hóa, không sợ race condition.
+4. Cho phép String Pool: vì không sửa được nội dung nên nhiều biến có thể chia sẻ
+   chung một object trong pool một cách an toàn.
+
+CÂU 2: == và equals() khác nhau thế nào khi so sánh String?
+ĐÁP ÁN:
+- Toán tử `==` so sánh REFERENCE: kiểm tra hai biến có cùng trỏ tới một object (cùng
+  một ô nhớ) hay không.
+- Phương thức `equals()` (lớp String đã override) so sánh NỘI DUNG: so từng ký tự
+  trong chuỗi.
+- Khi so chuỗi luôn phải dùng `equals()`. Toán tử `==` chỉ tình cờ cho `true` khi hai
+  biến cùng trỏ vào object trong pool, nên rất dễ trở thành bug khi gặp `new String`
+  hoặc chuỗi tạo lúc runtime.
+
+CÂU 3: new String("abc") tạo ra bao nhiêu object?
+ĐÁP ÁN:
+Tạo ra 1 HOẶC 2 object:
+- Literal `"abc"` cần một object trong pool. Nếu pool CHƯA CÓ "abc" thì JVM phải tạo
+  thêm một object pool, cộng object heap do `new` tạo, tổng cộng là 2 object.
+- Nếu pool ĐÃ CÓ SẴN "abc" thì chỉ cần tạo thêm một object mới trên heap (object pool
+  được tái dùng), tổng cộng là 1 object.
+- Bản thân từ khóa `new` LUÔN tạo đúng một object trên heap nằm ngoài pool; con số 1
+  hay 2 phụ thuộc vào việc literal đã có trong pool hay chưa.
+
+CÂU 4: String Pool là gì và nằm ở đâu?
+ĐÁP ÁN:
+- String Pool là vùng cache các String literal, để các literal trùng nội dung dùng
+  chung một object duy nhất, qua đó tiết kiệm bộ nhớ.
+- Từ Java 7, pool nằm trong HEAP (được GC dọn dẹp, có thể lớn). Trước Java 7 (Java 6
+  trở về trước), pool nằm trong PermGen - vùng cố định, nhỏ, dễ tràn gây
+  `OutOfMemoryError: PermGen space` nếu intern quá nhiều.
+- Các literal tự động được đưa vào pool; còn `intern()` là cách đưa một chuỗi tạo lúc
+  runtime vào pool một cách thủ công.
+
+CÂU 5: StringBuilder và StringBuffer khác nhau ra sao, khi nào dùng cái nào?
+ĐÁP ÁN:
+- Cả hai đều là lớp KHẢ BIẾN dùng để xây/nối chuỗi hiệu quả.
+- StringBuffer: mọi method đều `synchronized` nên thread-safe nhưng chậm hơn do phải
+  khóa.
+- StringBuilder: không đồng bộ (không synchronized) nên nhanh hơn, phù hợp dùng trong
+  một thread.
+- Mặc định nên dùng StringBuilder. Chỉ dùng StringBuffer khi THỰC SỰ chia sẻ một
+  builder giữa nhiều thread (trường hợp này rất hiếm). Về bản chất StringBuffer chính
+  là StringBuilder cộng thêm cơ chế `synchronized`.
+
+CÂU 6: Vì sao không nên nối chuỗi bằng += trong vòng lặp, mà ngoài vòng lặp thì + lại ổn?
+ĐÁP ÁN:
+- Vì String bất biến, mỗi lệnh `s += x` tạo một object mới copy lại toàn bộ nội dung
+  cũ. Trong vòng lặp `n` lần, tổng công việc là `1 + 2 + ... + n ≈ O(n²)` và sinh rất
+  nhiều rác cho GC. Do đó trong vòng lặp phải dùng StringBuilder (độ phức tạp ~O(n)).
+- Ngoài vòng lặp, một biểu thức như `"a" + b + "c"` được compiler tối ưu: trước Java 9
+  thay ngầm bằng StringBuilder, từ Java 9 dùng `invokedynamic` + `StringConcatFactory`.
+- Nhưng phép tối ưu này KHÔNG vượt qua ranh giới vòng lặp (mỗi lần lặp là một biểu
+  thức riêng), nên bên trong loop vẫn phải tự dùng StringBuilder.
+
+CÂU 7: intern() làm gì, và khi nào nên (không nên) dùng?
+ĐÁP ÁN:
+- `s.intern()` đưa nội dung của `s` vào String Pool nếu chưa có, rồi trả về reference
+  của object TRONG pool. Nhờ đó một chuỗi tạo bằng `new`/runtime có thể dùng chung
+  object với literal (so sánh `==` thành true).
+- Nên dùng khi xử lý dữ liệu lớn có NHIỀU GIÁ TRỊ TRÙNG LẶP để giảm bộ nhớ.
+- Không nên lạm dụng cho các chuỗi đa phần khác nhau - làm phình pool và chậm chương
+  trình; trước Java 7 còn dễ gây `OutOfMemoryError: PermGen`.
+
+CÂU 8: Tại sao String bất biến lại tốt cho HashMap, và liên quan gì tới việc cache hashCode?
+ĐÁP ÁN:
+- HashMap xác định vị trí phần tử dựa trên `hashCode()` của key. Nếu key thay đổi nội
+  dung sau khi đã đặt vào map, hash sẽ lệch và không tìm lại được phần tử.
+- String bất biến đảm bảo hash KHÔNG ĐỔI, và String còn cache hashCode (tính lần đầu
+  rồi lưu lại) nên các lần tra cứu lặp lại rất nhanh, không phải tính lại.
+- Đó là lý do String là key lý tưởng và an toàn cho mọi cấu trúc dữ liệu dạng băm
+  (HashMap, HashSet).
+
+CÂU 9: Vì sao mật khẩu nên giữ trong char[] thay vì String?
+ĐÁP ÁN:
+- Vì String bất biến và có thể nằm trong String Pool, nó tồn tại trong bộ nhớ LÂU và
+  không thể chủ động xóa - dễ bị lộ qua heap dump nếu bị tấn công.
+- `char[]` cho phép ghi đè giá trị (ví dụ `Arrays.fill(pwd, '\0')`) ngay sau khi dùng
+  xong, thu hẹp cửa sổ rủi ro bị lộ.
+- Đây là lý do các API bảo mật như `JPasswordField.getPassword()` (và một số chỗ
+  trong JDBC) trả về hoặc dùng `char[]` thay vì String.
+
+--------------------------------------------------------------------------------
+PHẦN XI: NHẬT KÝ THỰC HÀNH VÀ MINI PROJECT NGÀY 05
+--------------------------------------------------------------------------------
+
+1. Các tệp thực hành cần triển khai:
+
+   - StringIdentityDemo.java: Chứng minh sự khác nhau giữa ==, equals() và intern().
+     Bản giải hoàn thiện (đã điền chỗ trống `___` thành `equals`):
+     ```java
+     // File: StringIdentityDemo.java  (Java 21)
+     public class StringIdentityDemo {
+         public static void main(String[] args) {
+             // --- Nhóm literal: dùng chung object trong String Pool ---
+             String a = "abc";
+             String b = "abc";                 // lấy lại từ pool -> cùng object với a
+             System.out.println("a == b          : " + (a == b));          // true  (cùng reference pool)
+             System.out.println("a.equals(b)     : " + a.equals(b));       // true  (so sánh nội dung chuỗi)
+
+             // --- new String: luôn tạo object MỚI ngoài pool ---
+             String c = new String("abc");     // object riêng trên heap
+             System.out.println("a == c          : " + (a == c));          // false (khác reference)
+             System.out.println("a.equals(c)     : " + a.equals(c));       // true  (cùng nội dung)
+
+             // --- intern(): kéo nội dung về object trong pool ---
+             String d = c.intern();            // d trỏ tới object "abc" TRONG pool (chính là a)
+             System.out.println("a == d          : " + (a == d));          // true  (cùng object pool)
+             System.out.println("c == d          : " + (c == d));          // false (c vẫn là object heap riêng)
+
+             // --- Ghép literal là hằng số: compiler gộp tại thời điểm biên dịch ---
+             String e = "ab" + "c";            // "ab"+"c" đều là hằng -> compiler tính ra "abc" và đặt vào pool
+             System.out.println("a == e          : " + (a == e));          // true  (compile-time constant folding)
+
+             // --- Ghép có biến: tính lúc chạy -> object MỚI, không vào pool tự động ---
+             String pre = "ab";
+             String f = pre + "c";             // pre là biến -> ghép lúc runtime -> object mới ngoài pool
+             System.out.println("a == f          : " + (a == f));          // false
+             System.out.println("a == f.intern() : " + (a == f.intern())); // true (intern kéo về pool)
+         }
+     }
+     ```
+     Kết quả mong đợi: a==b true, a.equals(b) true, a==c false, a.equals(c) true,
+     a==d true, c==d false, a==e true, a==f false, a==f.intern() true.
+     Điểm mấu chốt cần giải thích: `a == e` là true vì `"ab" + "c"` đều là hằng số nên
+     compiler gộp ngay lúc biên dịch (constant folding) và đặt vào pool; còn `a == f`
+     là false vì `pre + "c"` có chứa biến `pre` nên phải tính lúc runtime, sinh ra
+     object mới nằm ngoài pool.
+
+   - StringConcatBenchmark.java: Đo và so sánh hiệu năng nối chuỗi `+=` (O(n²)) với
+     StringBuilder (~O(n)). Bản giải hoàn thiện (đã điền `StringBuilder` vào chỗ
+     trống):
+     ```java
+     // File: StringConcatBenchmark.java  (Java 21)
+     public class StringConcatBenchmark {
+
+         static final int N = 100_000;   // 100 nghìn vòng
+
+         public static void main(String[] args) {
+             // --- Cách SAI: nối bằng += trong vòng lặp -> O(n^2) ---
+             long t1 = System.nanoTime();
+             String s = "";
+             for (int i = 0; i < N; i++) {
+                 s += i;   // mỗi vòng tạo String mới = copy lại toàn bộ phần trước
+             }
+             long t2 = System.nanoTime();
+             System.out.printf("String +=        : %,d ms (độ dài cuối = %d)%n",
+                     (t2 - t1) / 1_000_000, s.length());
+
+             // --- Cách ĐÚNG: dùng StringBuilder -> ~O(n) ---
+             long t3 = System.nanoTime();
+             StringBuilder sb = new StringBuilder(); // class hỗ trợ nối chuỗi hiệu suất cao
+             for (int i = 0; i < N; i++) {
+                 sb.append(i);   // append vào buffer khả biến, không copy lại từ đầu
+             }
+             String s2 = sb.toString();
+             long t4 = System.nanoTime();
+             System.out.printf("StringBuilder    : %,d ms (độ dài cuối = %d)%n",
+                     (t4 - t3) / 1_000_000, s2.length());
+
+             // Kiểm chứng hai cách cho cùng kết quả
+             System.out.println("Hai kết quả giống nhau? " + s.equals(s2));
+         }
+     }
+     ```
+     Quan sát thực tế: `String +=` thường mất hàng trăm tới hàng nghìn ms, còn
+     StringBuilder chỉ mất vài ms - chênh nhau hàng trăm lần. Tăng N lên 200.000 thì
+     khoảng cách càng giãn ra đúng theo bản chất O(n²) so với O(n).
+
+   - TextBlockDemo.java: Minh họa Text Block viết câu SQL nhiều dòng mà không cần `\n`
+     hay escape dấu nháy kép:
+     ```java
+     // File: TextBlockDemo.java  (Java 21)
+     public class TextBlockDemo {
+         public static void main(String[] args) {
+             String sql = """
+                     SELECT id, name, current_price
+                     FROM auctions
+                     WHERE status = 'OPEN'
+                     ORDER BY current_price DESC
+                     """;
+             System.out.println(sql);   // giữ nguyên xuống dòng, không cần \n hay escape
+         }
+     }
+     ```
+
+2. Mini Project (Auction API) - In bản tóm tắt phiên đấu giá bằng String:
+   Tiếp nối Day 04 (đã có lớp Auction và Bid), nhiệm vụ Day 05 là vận dụng kiến thức
+   String để in ra bản tóm tắt một phiên đấu giá đẹp và đúng cách:
+   - buildSummary(): dùng StringBuilder để tạo chuỗi mô tả nhiều dòng (tên item, giá
+     hiện tại, số lượt bid, người dẫn đầu), có nhánh điều kiện khi chưa có lượt bid.
+   - buildSummaryTextBlock(): dùng Text Block kết hợp method `formatted(...)` cho gọn,
+     đẹp với khuôn cố định.
+   - So sánh hai cách và ghi chú khi nào nên dùng cái nào.
+
+   Bản giải hoàn thiện:
+   ```java
+   // File: AuctionSummary.java  (Java 21)
+   public class AuctionSummary {
+
+       // Day 04 đã có dữ liệu này (ở đây hard-code cho gọn để minh hoạ String)
+       private final String itemName  = "Đồng hồ cổ Thuỵ Sĩ";
+       private final long   currentPrice = 1_500;     // đơn vị: nghìn đồng
+       private final int    totalBids   = 7;
+       private final String topBidder   = "ninh.dev";
+
+       // Cách 1: StringBuilder — linh hoạt, thêm dòng có điều kiện dễ
+       public String buildSummary() {
+           StringBuilder sb = new StringBuilder();
+           sb.append("===== TÓM TẮT PHIÊN ĐẤU GIÁ =====\n");
+           sb.append("Sản phẩm     : ").append(itemName).append('\n');
+           sb.append("Giá hiện tại : ").append(currentPrice).append(" nghìn đ\n");
+           sb.append("Số lượt bid  : ").append(totalBids).append('\n');
+           if (totalBids > 0) {
+               sb.append("Đang dẫn đầu : ").append(topBidder).append('\n');
+           } else {
+               sb.append("Đang dẫn đầu : (chưa có lượt bid nào)\n");
+           }
+           sb.append("=================================");
+           return sb.toString();   // chỉ tạo String 1 lần ở cuối
+       }
+
+       // Cách 2: Text Block + formatted — đẹp cho khuôn cố định
+       public String buildSummaryTextBlock() {
+           return """
+                   ===== TÓM TẮT PHIÊN ĐẤU GIÁ =====
+                   Sản phẩm     : %s
+                   Giá hiện tại : %d nghìn đ
+                   Số lượt bid  : %d
+                   Đang dẫn đầu : %s
+                   =================================""".formatted(
+                   itemName, currentPrice, totalBids,
+                   totalBids > 0 ? topBidder : "(chưa có lượt bid nào)");
+       }
+
+       public static void main(String[] args) {
+           AuctionSummary a = new AuctionSummary();
+           System.out.println(a.buildSummary());
+           System.out.println();
+           System.out.println(a.buildSummaryTextBlock());
+       }
+   }
+   ```
+   Khi nào dùng cái nào: Text Block hợp với khuôn CỐ ĐỊNH (đẹp, dễ đọc). StringBuilder
+   hợp khi cần LOGIC ĐỘNG (vòng lặp danh sách bid, thêm/bớt dòng theo điều kiện). Trong
+   thực tế Auction API, danh sách lịch sử bid biến động nên dùng StringBuilder; còn
+   header tĩnh thì dùng Text Block.
+
+3. Checklist hoàn thành Ngày 05:
+   - Giải thích được 4 lý do String immutable bằng lời của mình.
+   - Phân biệt rõ String Pool, literal vs new String, và == vs equals().
+   - Chạy được Bài 1 và giải thích từng dòng true/false.
+   - Chạy Bài 2 và thấy chênh lệch hiệu năng += với StringBuilder.
+   - Hiểu và viết được Text Block cho SQL/JSON.
+   - Hoàn thành Mini Project (StringBuilder + Text Block cho Auction summary).
+   - Trả lời được 9 câu phỏng vấn ở trên.
+   - Tạo git commit cho ngày học hôm nay.
+
+================================================================================
+KẾT THÚC GHI CHÚ NGÀY 05 - ĐÃ HOÀN THÀNH TOÀN BỘ LÝ THUYẾT & 9 CÂU HỎI PHỎNG VẤN
+================================================================================
