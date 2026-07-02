@@ -1,0 +1,767 @@
+================================================================================
+GHI CHÚ HỌC TẬP CHI TIẾT - NGÀY 06: OOP DEEP DIVE
+================================================================================
+
+Tài liệu này đào sâu bốn trụ cột OOP ở mức bản chất: Encapsulation, Inheritance,
+Polymorphism và Abstraction. Phân biệt static binding (overload) với dynamic
+dispatch (override) cùng cơ chế vtable, ý nghĩa của this/super/final và covariant
+return type, nguyên tắc Composition over Inheritance, các access modifier,
+contract của equals()/hashCode()/toString(), đối chiếu OOP với PHP/Laravel và liên
+hệ thực tế Spring Boot/Production. Kèm 9 câu hỏi phỏng vấn được giải đầy đủ và
+nhật ký thực hành mini project Auction API.
+
+--------------------------------------------------------------------------------
+PHẦN I: BỐN TRỤ CỘT OOP (ENCAPSULATION, INHERITANCE, POLYMORPHISM, ABSTRACTION)
+--------------------------------------------------------------------------------
+
+OOP không phải là "viết class cho có". Bốn trụ cột là bốn công cụ giải quyết bốn
+loại vấn đề khác nhau, chứ không phải bốn định nghĩa cần học thuộc lòng. Điều quan
+trọng là hiểu được *tại sao* và *khi nào* dùng từng trụ cột.
+
+1. Encapsulation:
+   - Bản chất: Giấu state bên trong đối tượng, chỉ để lộ hành vi ra ngoài thông qua
+     các method.
+   - Giải quyết vấn đề: Bảo vệ invariant (ràng buộc của đối tượng, ví dụ "giá đấu
+     giá không bao giờ được âm").
+   - Cách làm: Field để `private`, truy cập qua getter/setter. Điều quan trọng KHÔNG
+     phải là "viết getter cho đẹp", mà là setter/method chính là nơi duy nhất để ép
+     luật (enforce invariant). Ví dụ minh họa giá đấu giá phải dương:
+
+     ```java
+     public class Bid {
+         private long amount;            // private: bên ngoài không được truy cập trực tiếp
+
+         public void setAmount(long amount) {
+             if (amount <= 0) {          // invariant được kiểm soát tại một nơi duy nhất
+                 throw new IllegalArgumentException("Giá đặt phải dương");
+             }
+             this.amount = amount;
+         }
+         public long getAmount() { return amount; }
+     }
+     ```
+
+   - Mẹo hiểu: Nếu field là `public`, bất kỳ ai cũng gán được `amount = -999`, lúc
+     đó invariant bị vỡ. Encapsulation nghĩa là đặt một cái cổng duy nhất để mọi
+     thay đổi state đều phải đi qua cổng đó và bị kiểm soát.
+
+2. Inheritance:
+   - Bản chất: Lớp con tái sử dụng và mở rộng lớp cha bằng từ khóa `extends`.
+   - Giải quyết vấn đề: Tái sử dụng code, mô hình hóa quan hệ "is-a".
+   - Ví dụ: `class SavingsAccount extends Account` mang nghĩa "SavingsAccount IS-A
+     Account". Lớp con thừa hưởng field/method `public` và `protected` của cha, có
+     thể thêm method mới hoặc override method cũ.
+   - Cảnh báo quan trọng: Chỉ dùng kế thừa khi quan hệ "is-a" thực sự đúng và cây
+     kế thừa ổn định (xem chi tiết ở Phần V về Composition over Inheritance).
+
+3. Polymorphism:
+   - Bản chất: Một interface, nhiều cài đặt (implementation).
+   - Giải quyết vấn đề: Code gọi theo một cách duy nhất, nhưng khi chạy lại thực thi
+     nhiều hành vi khác nhau tùy thuộc vào kiểu thực tế của đối tượng.
+   - Ví dụ: Cùng câu lệnh `bid.effectivePrice()` nhưng nếu `bid` thực ra là một
+     `ProxyBid` thì chạy logic proxy, còn nếu là `RegularBid` thì chạy logic thường.
+     Người gọi không cần biết loại cụ thể của đối tượng.
+
+4. Abstraction:
+   - Bản chất: Lộ ra "cái gì" (what - contract), giấu đi "thế nào" (how -
+     implementation).
+   - Giải quyết vấn đề: Tách contract ra khỏi chi tiết cài đặt (implementation).
+   - Ví dụ: `interface PaymentGateway { void charge(long amount); }` nói rằng "tôi
+     tính được tiền" (what) mà không hề lộ ra bên dưới là Stripe hay VNPay (how).
+     Code nghiệp vụ chỉ phụ thuộc vào contract, không phụ thuộc vào implementation
+     cụ thể.
+
+--------------------------------------------------------------------------------
+PHẦN II: STATIC BINDING vs DYNAMIC DISPATCH
+--------------------------------------------------------------------------------
+
+Đây là phần lập trình viên hay học hời hợt nhưng lại là cốt lõi để hiểu đa hình.
+Có hai thời điểm mà Java quyết định "sẽ gọi method nào":
+
+1. Static binding (early binding):
+   - Áp dụng cho: overload, method `static`, method `private`, method `final`.
+   - Thời điểm quyết định: Lúc biên dịch (compile time).
+   - Cơ chế: Trình biên dịch nhìn vào kiểu khai báo của biến cộng với danh sách
+     tham số (signature) để chốt method ngay lúc compile.
+
+2. Dynamic dispatch (late binding):
+   - Áp dụng cho: method instance bị override.
+   - Thời điểm quyết định: Lúc chạy (runtime).
+   - Cơ chế: Lúc compile chỉ biết "sẽ gọi method `effectivePrice()`"; còn method
+     nào thực sự chạy thì được quyết định lúc runtime, dựa trên kiểu thực tế của
+     đối tượng mà biến đang trỏ tới.
+
+3. Tóm tắt sự phân nhánh:
+   - Overload (cùng tên, khác tham số) -> static binding -> chọn theo kiểu khai báo
+     cộng signature, quyết định lúc biên dịch.
+   - Override (cùng signature, lớp con ghi đè lớp cha) -> dynamic dispatch -> chọn
+     theo kiểu thực tế của đối tượng (virtual method), quyết định lúc chạy.
+
+4. Cơ chế vtable (virtual method table):
+   - Mỗi class có một virtual method table (vtable). Mỗi đối tượng giữ một con trỏ tới
+     vtable của lớp thực tế của nó.
+   - Khi gọi `bid.effectivePrice()`, JVM tra cứu vtable của đối tượng rồi nhảy tới
+     đúng cài đặt cần chạy.
+   - Vì cơ chế này mà method instance trong Java mặc định là virtual. Điều này
+     khác C++ (phải khai báo `virtual` tường minh) và cũng khác PHP (mọi method
+     non-static cũng được late-bound).
+   - Minh họa:
+
+     ```java
+     Bid b = new ProxyBid(...);   // kiểu khai báo: Bid | kiểu thực tế: ProxyBid
+     b.effectivePrice();          // dynamic dispatch -> chạy ProxyBid.effectivePrice() (kiểu thực tế)
+     ```
+
+5. CẢNH BÁO cực kỳ quan trọng: Field thì KHÔNG đa hình.
+   - Field bind theo kiểu khai báo lúc compile (tức là static binding). Chỉ có
+     method instance mới là dynamic dispatch.
+   - Tuyệt đối ĐỪNG bao giờ trông cậy vào việc "override field" - khái niệm này
+     không tồn tại đúng nghĩa trong Java.
+
+--------------------------------------------------------------------------------
+PHẦN III: OVERLOADING vs OVERRIDING
+--------------------------------------------------------------------------------
+
+Hai khái niệm này rất dễ nhầm. Bảng dưới đây phân biệt theo từng tiêu chí:
+
+1. Quan hệ giữa hai method:
+   - Overloading: Nằm trong cùng một class (hoặc trong quan hệ kế thừa).
+   - Overriding: Bắt buộc phải có quan hệ cha-con (kế thừa hoặc implement interface).
+
+2. Tên method:
+   - Overloading: Giống nhau.
+   - Overriding: Giống nhau.
+
+3. Danh sách tham số:
+   - Overloading: Phải khác nhau (về số lượng, kiểu, hoặc thứ tự tham số).
+   - Overriding: Phải y hệt nhau (signature phải trùng khít).
+
+4. Kiểu trả về:
+   - Overloading: Được phép khác nhau.
+   - Overriding: Phải giống hoặc là kiểu con (covariant return type).
+
+5. Access modifier:
+   - Overloading: Tự do, không ràng buộc.
+   - Overriding: Không được thu hẹp. Ví dụ cha là `public` thì con không được hạ
+     xuống `protected`.
+
+6. Checked exception:
+   - Overloading: Tự do.
+   - Overriding: Không được ném rộng hơn hoặc mới hơn so với mức cha cho phép.
+
+7. Cơ chế binding:
+   - Overloading: Static binding (lúc biên dịch).
+   - Overriding: Dynamic dispatch (lúc chạy).
+
+8. Annotation @Override:
+   - Overloading: Không áp dụng.
+   - Overriding: Nên dùng.
+
+9. Vì sao nên luôn dùng annotation @Override:
+   - Nó không làm thay đổi hành vi của chương trình, nhưng nó yêu cầu compiler kiểm
+     tra "method này có thực sự đang override một method của lớp cha hay không".
+   - Nếu bạn gõ sai signature (ví dụ viết `equals(MyType o)` thay vì `equals(Object
+     o)`), mà không có `@Override`, thì compiler sẽ im lặng coi đó là một overload
+     mới -> đây là một bug ngầm rất khó phát hiện. Còn nếu có `@Override` thì
+     compiler báo lỗi ngay lập tức.
+
+   ```java
+   class Animal { String sound() { return "..."; } }
+
+   class Dog extends Animal {
+       @Override String sound() { return "Gâu"; }   // override hợp lệ
+       String sound(int times) { return "Gâu".repeat(times); } // overload (khác tham số)
+   }
+   ```
+
+10. Covariant return type (Kiểu trả về hiệp biến):
+    - Khi override, kiểu trả về được phép hẹp hơn (là kiểu con) so với kiểu trả về
+      của method cha. Điều này rất hữu ích cho các pattern như builder hoặc clone.
+
+    ```java
+    class Animal { Animal reproduce() { return new Animal(); } }
+    class Dog extends Animal {
+        @Override Dog reproduce() { return new Dog(); }   // trả về Dog (con của Animal) — hợp lệ
+    }
+    ```
+
+--------------------------------------------------------------------------------
+PHẦN IV: TỪ KHÓA this, super, final
+--------------------------------------------------------------------------------
+
+1. Từ khóa `this` - tham chiếu tới chính đối tượng hiện tại:
+   - Dùng để phân biệt field với tham số khi chúng trùng tên: `this.amount = amount;`
+   - Dùng để gọi một constructor khác trong cùng class: `this(arg1, arg2);` - lời
+     gọi này phải nằm ở dòng đầu tiên của constructor.
+
+2. Từ khóa `super` - tham chiếu tới phần thuộc về lớp cha:
+   - Dùng để gọi method của cha đã bị override: `super.sound();`
+   - Dùng để gọi constructor của cha: `super(arg);` - phải nằm ở dòng đầu tiên của
+     constructor con. Nếu bạn không viết, Java tự động chèn `super()` không tham số.
+
+   ```java
+   class ProxyBid extends Bid {
+       private final long maxLimit;
+       ProxyBid(User u, long amount, long maxLimit) {
+           super(u, amount);            // gọi constructor Bid (cha) trước
+           this.maxLimit = maxLimit;
+       }
+   }
+   ```
+
+3. Từ khóa `final` - "chốt lại, không cho đổi", có 3 ngữ cảnh dùng:
+   - `final class`: Lớp này không kế thừa được. Ví dụ thực tế: `String`, `Integer`,
+     `LocalDate` được khai báo final để đảm bảo tính bất biến và an toàn.
+   - `final method`: Method này không override được. Dùng để khóa lại hành vi cốt
+     lõi của một framework.
+   - `final field`: Field này chỉ được gán giá trị đúng một lần. Đây là nền tảng của
+     field bất biến và hằng số `static final`.
+
+4. Liên hệ quan trọng: `final field` + `private` + không có setter chính là nền
+   tảng của immutable object (đối tượng bất biến) - điều cực kỳ quan trọng cho
+   thread-safety (an toàn đa luồng). Kiểu `record` (sẽ học ở các ngày sau) thực chất
+   chính là cú pháp gọn gàng cho chính ý tưởng này.
+
+--------------------------------------------------------------------------------
+PHẦN V: COMPOSITION OVER INHERITANCE (HAS-A vs IS-A)
+--------------------------------------------------------------------------------
+
+Inheritance rất hấp dẫn vì cho phép tái dùng nhanh, nhưng kế thừa sâu lại gây ra sự
+cứng nhắc và nhiều rủi ro.
+
+1. Các vấn đề của inheritance sâu:
+   - Fragile base class: Việc sửa lớp cha có thể vô tình làm vỡ tất cả lớp con.
+     Lớp con bị buộc chặt vào implementation details của cha, chứ không chỉ
+     phụ thuộc vào contract.
+   - Java không hỗ trợ multiple inheritance class - khi đã vào một cây kế thừa thì bị kẹt ở
+     đó, khó ghép nhiều hành vi từ nhiều nguồn.
+   - Inheritance làm lộ toàn bộ API `protected/public` của cha ra con, dễ gây rò rỉ
+     trừu tượng (leaky abstraction).
+
+2. Giải pháp Composition:
+   - Thay vì quan hệ "is-a", ta dùng quan hệ "has-a". Đối tượng chứa một đối tượng
+     khác như một field và ủy quyền (delegate) công việc cho nó.
+
+   ```java
+   // ❌ Lạm dụng inheritance: Auction "là một" ArrayList? Không hợp lý.
+   class Auction extends ArrayList<Bid> { ... }
+
+   // ✅ Composition: Auction "has-a" danh sách Bid và "has-a" Item
+   class Auction {
+       private final Item item;            // has-a
+       private final List<Bid> bids = new ArrayList<>();   // has-a
+       public void place(Bid bid) { bids.add(bid); }       // ủy quyền có kiểm soát
+   }
+   ```
+
+3. Quy tắc thực dụng để chọn:
+   - Khi quan hệ "is-a" thực sự đúng và cây kế thừa ổn định -> dùng inheritance.
+   - Còn lại (chỉ cần tái dùng code, ghép hành vi, cần linh hoạt) -> dùng composition.
+   - Spring ở khắp nơi đều dùng composition cộng với interface (Dependency Injection
+     khiến các thành phần phụ thuộc vào nhau theo kiểu has-a).
+
+--------------------------------------------------------------------------------
+PHẦN VI: ACCESS MODIFIER
+--------------------------------------------------------------------------------
+
+Java có 4 mức access modifier, sắp xếp từ hẹp đến rộng. Bảng dưới mô tả ai được
+phép truy cập:
+
+1. `private`:
+   - Truy cập được: chỉ trong cùng class.
+   - Không truy cập được: cùng package, lớp con khác package, hay mọi nơi khác.
+
+2. (mặc định) `package-private` - tức là không ghi modifier nào:
+   - Truy cập được: cùng class, cùng package.
+   - Không truy cập được: lớp con ở khác package, mọi nơi khác.
+
+3. `protected`:
+   - Truy cập được: cùng class, cùng package, và lớp con (kể cả khi ở khác package).
+   - Không truy cập được: các class không liên quan ở khác package.
+
+4. `public`:
+   - Truy cập được: mọi nơi.
+
+5. CẢNH BÁO dành riêng cho người đến từ PHP:
+   - Mặc định (khi không ghi modifier) trong Java không phải là `public` như nhiều
+     người PHP lầm tưởng - nó là `package-private` (chỉ trong cùng package).
+   - `protected` rộng hơn `private` nhưng hẹp hơn `public`. Điểm đặc biệt là nó cho
+     phép lớp con ở package khác truy cập.
+
+--------------------------------------------------------------------------------
+PHẦN VII: equals() / hashCode() / toString() CONTRACT
+--------------------------------------------------------------------------------
+
+Mọi class trong Java đều kế thừa từ lớp `Object`, nên có sẵn ba method này. Nhưng
+bản mặc định thường không đúng ý bạn.
+
+1. Method `equals(Object)`:
+   - Bản mặc định so sánh địa chỉ reference (giống hệt toán tử `==`).
+   - Nếu muốn so sánh theo giá trị (ví dụ hai `Bid` có cùng id thì coi là "bằng
+     nhau") thì bắt buộc phải override.
+   - Bốn quy tắc của contract `equals`:
+     + Reflexive: `x.equals(x)` luôn trả về `true`.
+     + Symmetric: `x.equals(y)` đúng khi và chỉ khi `y.equals(x)` đúng.
+     + Transitive: nếu `x.equals(y)` và `y.equals(z)` thì `x.equals(z)`.
+     + Consistent: gọi nhiều lần vẫn cho cùng kết quả (nếu object không đổi). Và
+       `x.equals(null)` luôn trả về `false`.
+
+2. Quy tắc vàng: Override `equals` thì BẮT BUỘC override `hashCode`.
+   - Lý do nằm ở contract: hai đối tượng `equals` nhau thì phải có `hashCode` bằng
+     nhau.
+   - Cấu trúc băm (HashMap/HashSet) hoạt động theo 2 bước:
+     + Bước 1: Tính `hashCode` để tìm ngăn (bucket).
+     + Bước 2: Trong bucket đó, dùng `equals` để so khớp chính xác.
+   - Nếu hai đối tượng `equals` nhau nhưng `hashCode` lại khác nhau, chúng sẽ rơi
+     vào hai bucket khác nhau. Hậu quả: HashSet sẽ chứa cả hai (tưởng trùng mà vẫn
+     lọt vào), còn HashMap.get() sẽ tra nhầm bucket và trả về `null`.
+
+3. Method `toString()`:
+   - Bản mặc định in ra dạng `ClassName@hexHash` (vô dụng khi debug/log).
+   - Nên override để in ra trạng thái có ý nghĩa của đối tượng.
+
+4. Ví dụ minh họa đầy đủ một class User override đúng cả ba method:
+
+   ```java
+   import java.util.Objects;
+
+   public final class User {
+       private final long id;
+       private final String name;
+
+       public User(long id, String name) { this.id = id; this.name = name; }
+
+       @Override
+       public boolean equals(Object o) {
+           if (this == o) return true;                 // reflexive + tối ưu
+           if (!(o instanceof User other)) return false; // pattern matching (Java 16+)
+           return id == other.id;                       // định danh bằng id
+       }
+
+       @Override
+       public int hashCode() { return Objects.hash(id); }   // consistent với equals (cùng field)
+
+       @Override
+       public String toString() { return "User{id=" + id + ", name='" + name + "'}"; }
+   }
+   ```
+
+5. Mẹo thực hành: Dùng `Objects.equals(a, b)` để so sánh null-safe
+   và `Objects.hash(...)` để gộp nhiều field lại - đây là cách idiomatic, tránh tự
+   viết tay dễ sai. Nguyên tắc bất di bất dịch: field nào đã đưa vào `equals` thì phải
+   đưa đúng field đó vào `hashCode`.
+
+--------------------------------------------------------------------------------
+PHẦN VIII: ĐỐI CHIẾU HỆ TƯ DUY KỸ THUẬT: PHP/LARAVEL vs JAVA
+--------------------------------------------------------------------------------
+
+PHP cũng là ngôn ngữ OOP đầy đủ, nhưng có vài khác biệt cốt tử so với Java:
+
+1. Khai báo class: Cả hai gần như giống nhau - PHP `class Bid { ... }`, Java
+   `class Bid { ... }`.
+
+2. Inheritance: Cả hai đều là đơn kế thừa - PHP `class A extends B`, Java
+   `class A extends B`.
+
+3. Đa kế thừa hành vi:
+   - PHP: Không có multiple inheritance class, dùng TRAITS (`use SomeTrait;`).
+   - Java: Không có multiple inheritance class, dùng `interface` cộng `default method`.
+
+4. Interface và Abstract class: Tương đương nhau ở hai ngôn ngữ
+   (`interface I {}`/`implements I`, `abstract class`/`abstract method`).
+
+5. Visibility:
+   - PHP có `public`/`protected`/`private`.
+   - Java có `public`/`protected`/`private` và thêm package-private.
+
+6. Mặc định khi không ghi modifier:
+   - PHP: là `public`.
+   - Java: là package-private (khác nhau - đây là điểm dễ nhầm nhất!).
+
+7. Hằng số:
+   - PHP: `const X = 1;`
+   - Java: `static final int X = 1;`
+
+8. So sánh "bằng giá trị":
+   - PHP: `$a == $b` (đúng khi cùng class và cùng property).
+   - Java: `a.equals(b)` (đúng theo logic do bạn tự định nghĩa).
+
+9. So sánh "cùng instance":
+   - PHP: `$a === $b` (cùng đúng một object).
+   - Java: `a == b` (so sánh reference).
+
+10. In đối tượng:
+    - PHP: `__toString()`.
+    - Java: `toString()`.
+
+11. Băm trong tập hợp:
+    - PHP: `SplObjectStorage`, dùng mảng key.
+    - Java: cần `hashCode()` cộng `equals()` cho `HashMap`/`HashSet`.
+
+12. Khác biệt tư duy quan trọng nhất:
+    - Traits của PHP là cơ chế mixin lúc biên dịch - ghép nhiều trait
+      vào một class để tái dùng hành vi, lấp chỗ trống của việc thiếu đa kế thừa. Java
+      không có trait; cách tương đương gần nhất là `interface` có `default method`
+      (Java 8+). Tuy nhiên trait PHP còn có thể mang theo cả state/property, còn
+      interface Java thì không.
+    - Về `==` vs `===` trong PHP: `==` của PHP với hai object là true khi cùng class
+      và cùng giá trị property - gần với `equals()` của Java. Còn `===` là cùng đúng
+      một instance - gần với `==` của Java (so reference). Vậy phải đảo ngược thói
+      quen: trong Java, `==` cho object là so reference, muốn so giá trị phải dùng
+      `.equals()`.
+
+13. Hệ quả thực tế hay dính bug: Dân PHP quen viết `if (str1 == str2)` để so chuỗi.
+    Trong Java, `==` so reference - phải dùng `str1.equals(str2)`. Tương tự với mọi
+    object: dùng `==` gần như luôn sai khi bạn thật sự muốn so nội dung.
+
+--------------------------------------------------------------------------------
+PHẦN IX: BẪY THƯỜNG GẶP VÀ KINH NGHIỆM THỰC TẾ (COMMON PITFALLS)
+--------------------------------------------------------------------------------
+
+1. So sánh object bằng `==` thay vì `.equals()`:
+   Đây là thói quen mang từ PHP (`==`). Trong Java, `==` so sánh reference; với
+   chuỗi và đối tượng phải dùng `.equals()`.
+
+2. Override `equals` mà quên `hashCode`:
+   `HashSet`/`HashMap` sẽ hỏng một cách âm thầm: phần tử trùng nhau vẫn lọt vào,
+   và `map.get(key)` trả về `null`. Luôn luôn phải override cả cặp `equals` và
+   `hashCode` đi đôi với nhau.
+
+3. `hashCode` và `equals` không dùng cùng tập field:
+   Việc này vi phạm contract và gây ra bug băm. Field nào đã đưa vào `equals` thì
+   phải đưa đúng field đó vào `hashCode`.
+
+4. Sai signature khi override (do thiếu @Override):
+   Nếu viết `equals(Bid o)` thay vì `equals(Object o)`, bạn vô tình tạo ra một
+   overload mới, còn `equals` mặc định của Object vẫn được gọi. Luôn dán `@Override`
+   để compiler bắt lỗi này ngay.
+
+5. Tưởng nhầm field cũng đa hình (polymorphic):
+   Chỉ có method instance mới là dynamic dispatch. Field bind theo kiểu khai báo
+   (static binding).
+
+6. Lạm dụng inheritance:
+   Chỉ vì muốn "tái dùng vài dòng code" mà kế thừa sẽ dẫn đến cây kế thừa sâu và
+   tình trạng fragile base class. Khi nghi ngờ, hãy dùng composition.
+
+7. Để field ở mức `public`:
+   Việc này phá vỡ tính đóng gói (encapsulation), invariant không còn được bảo vệ.
+   Mặc định nên để field `private` và chỉ lộ ra qua method.
+
+8. Quên gọi `super(...)` đúng tham số:
+   Nếu lớp cha không có constructor mặc định (no-arg), lớp con bắt buộc phải gọi
+   `super(...)` đúng tham số - nếu không sẽ lỗi biên dịch.
+
+--------------------------------------------------------------------------------
+PHẦN X: SPRING BOOT & LIÊN HỆ THỰC TẾ PRODUCTION
+--------------------------------------------------------------------------------
+
+1. Dependency Injection (DI) dựa trên polymorphism cộng abstraction:
+   Bạn inject `PaymentGateway` (một interface), và Spring sẽ tiêm vào cài đặt cụ
+   thể (ví dụ `StripeGateway`). Code nghiệp vụ phụ thuộc vào contract; khi đổi cài
+   đặt không cần sửa code gọi. Đây chính là Abstraction cộng Polymorphism được áp
+   dụng ở quy mô framework.
+
+2. Composition là kiến trúc mặc định của Spring:
+   Service inject Repository, Repository lại inject DataSource... tất cả đều là quan
+   hệ "has-a" thông qua constructor injection. Gần như không bao giờ dùng inheritance
+   cho logic nghiệp vụ.
+
+3. equals/hashCode cho JPA Entity là chủ đề nhạy cảm:
+   Entity được Hibernate quản lý và thường được dùng làm key trong các `Set` quan
+   hệ. Khuyến nghị thực tế: nên định nghĩa `equals/hashCode` dựa trên business key
+   hoặc id ổn định, không dựa trên field có thể thay đổi - để tránh vỡ `Set` sau khi
+   persist (lưu) entity.
+
+4. `final` phục vụ thread-safety:
+   Bean Singleton được dùng chung cho mọi request; field bất biến (`private final`)
+   giúp đảm bảo an toàn đa luồng mà không cần khóa (lock). Các DTO/value object nên
+   được thiết kế immutable.
+
+5. `toString()` phục vụ log và observability:
+   Nên override `toString` (hoặc dùng Lombok `@ToString`) để log đối tượng ra dạng
+   có ý nghĩa. Nhưng phải cẩn thận không log dữ liệu nhạy cảm như mật khẩu hay token.
+
+--------------------------------------------------------------------------------
+PHẦN XI: GIẢI THÍCH CHI TIẾT VÀ BÁM SÁT TOÀN BỘ 9 CÂU HỎI PHỎNG VẤN
+--------------------------------------------------------------------------------
+
+CÂU 1: Phân biệt overloading và overriding?
+ĐÁP ÁN:
+- Overloading (nạp chồng): là cùng tên method nhưng khác danh sách tham số (về số
+  lượng, kiểu, hoặc thứ tự), nằm trong cùng một class. Việc chọn method được quyết
+  định lúc biên dịch (static binding). Kiểu trả về được phép khác nhau.
+- Overriding (ghi đè): là lớp con định nghĩa lại một method của cha với signature y
+  hệt. Việc chọn method được quyết định lúc chạy (dynamic dispatch). Khi override:
+  không được thu hẹp phạm vi truy cập (access modifier), không được ném checked exception
+  rộng hơn cha cho phép, và kiểu trả về phải giống hoặc là kiểu con (covariant
+  return type).
+
+CÂU 2: Bốn trụ cột OOP là gì?
+ĐÁP ÁN:
+1. Encapsulation: giấu state, chỉ lộ hành vi ra ngoài, mục đích là bảo vệ invariant
+   của đối tượng.
+2. Inheritance: mô hình quan hệ "is-a", cho phép tái dùng và mở rộng code của lớp cha.
+3. Polymorphism: một interface nhiều cài đặt, một lời gọi nhưng chạy nhiều hành vi
+   khác nhau tùy kiểu thực tế của đối tượng.
+4. Abstraction: lộ ra "cái gì" (what - contract), giấu đi "thế nào" (how -
+   implementation), thực hiện qua abstract class hoặc interface.
+
+CÂU 3: Vì sao override `equals` thì phải override `hashCode`?
+ĐÁP ÁN:
+Vì contract quy định: hai đối tượng `equals` nhau thì bắt buộc phải có `hashCode`
+bằng nhau. `HashMap`/`HashSet` tìm phần tử theo 2 bước - đầu tiên dùng `hashCode`
+để chọn bucket (ngăn), sau đó dùng `equals` để so khớp chính xác trong bucket đó. Nếu
+hai đối tượng bằng nhau theo `equals` nhưng `hashCode` lại khác nhau, chúng sẽ rơi
+vào hai bucket khác nhau. Hậu quả là tập hợp tưởng chúng không trùng nên chứa cả
+hai, và `map.get` sẽ tra nhầm bucket rồi trả về `null`.
+
+CÂU 4: `final` dùng để làm gì? Có ba ngữ cảnh nào?
+ĐÁP ÁN:
+- `final class`: lớp không thể bị kế thừa (ví dụ `String`).
+- `final method`: method không thể bị override.
+- `final field`: field chỉ được gán giá trị một lần duy nhất (là nền tảng của
+  immutable object và hằng số `static final`).
+Mục đích chung của `final` là: khóa lại hành vi hoặc giá trị, đảm bảo tính bất biến
+và an toàn đa luồng.
+
+CÂU 5: `==` và `.equals()` khác nhau thế nào trong Java?
+ĐÁP ÁN:
+- Với đối tượng, `==` so sánh reference (kiểm tra hai biến có cùng trỏ tới một
+  instance hay không).
+- `.equals()` so sánh theo logic do bạn tự định nghĩa (thường là so theo giá trị).
+- Đối chiếu với PHP: `==` của Java tương đương với `===` của PHP; còn `.equals()`
+  của Java tương đương với `==` của PHP. Với chuỗi, luôn luôn dùng `.equals()`,
+  tuyệt đối không dùng `==`.
+
+CÂU 6: Giải thích static binding vs dynamic dispatch và cơ chế vtable.
+ĐÁP ÁN:
+- Static binding (early binding) chốt method lúc biên dịch, dựa trên kiểu khai báo
+  cộng với signature - áp dụng cho overload, method `static`, `private`, `final`.
+- Dynamic dispatch (late binding) chốt method lúc chạy, dựa trên kiểu thực tế của đối
+  tượng - áp dụng cho method instance bị override.
+- Cơ chế vtable: mỗi class có một virtual method table (vtable); mỗi đối tượng trỏ
+  tới vtable của lớp thực tế của nó. Khi gọi một method ảo, JVM tra cứu vtable để nhảy
+  tới đúng cài đặt cần chạy. Method instance trong Java mặc định là virtual.
+- Lưu ý quan trọng: field bind theo kiểu khai báo (static binding), không đa hình.
+
+CÂU 7: Khi nào chọn composition thay vì inheritance? Vì sao?
+ĐÁP ÁN:
+- Nên ưu tiên composition (quan hệ has-a) khi chỉ cần tái dùng code hoặc ghép hành
+  vi, khi quan hệ không thực sự là "is-a", hoặc khi cần sự linh hoạt.
+- Lý do tránh inheritance sâu: nó gây ra fragile base class (sửa lớp cha làm vỡ lớp con
+  vì con phụ thuộc vào implementation details của cha), làm lộ API của cha ra con, và do
+  Java không hỗ trợ multiple inheritance class nên ta bị kẹt trong một cây kế thừa duy nhất.
+- Chỉ nên kế thừa khi quan hệ "is-a" thật sự đúng và dòng họ ổn định. Spring/JPA
+  chủ yếu dùng composition cộng interface (qua DI).
+
+CÂU 8: Covariant return type là gì? Cho ví dụ ứng dụng.
+ĐÁP ÁN:
+- Covariant return type (kiểu trả về hiệp biến): khi override, kiểu trả về được
+  phép là kiểu con của kiểu trả về ở method cha.
+- Ví dụ: method cha là `Animal reproduce()`, ở lớp con override thành
+  `Dog reproduce()` - đây là hợp lệ vì `Dog` là con của `Animal`.
+- Ứng dụng: rất hữu ích cho các pattern như clone/builder/factory ở lớp con, giúp
+  trả về đúng kiểu con mà không cần ép kiểu (cast), khiến API gọn gàng và an toàn
+  về kiểu.
+
+CÂU 9: Một class override `equals` nhưng `hashCode` dựa trên field MUTABLE sẽ gây
+       vấn đề gì trong HashSet?
+ĐÁP ÁN:
+- Nếu bạn thêm một đối tượng vào `HashSet` rồi sau đó thay đổi field tham gia tính
+  `hashCode`, đối tượng sẽ bị "lạc bucket": nó vẫn nằm ở bucket cũ (theo hashCode
+  lúc add), nhưng khi tra cứu lại JVM tính ra bucket mới.
+- Hậu quả: các thao tác `contains`/`remove` sẽ trả kết quả sai, và đối tượng đó trở
+  thành "rác không thể xóa được" trong tập.
+- Vì vậy, key của tập hợp (Set/Map) nên immutable, hoặc `equals`/`hashCode` phải dựa
+  trên business key ổn định (đặc biệt quan trọng với JPA Entity).
+
+--------------------------------------------------------------------------------
+PHẦN XII: NHẬT KÝ THỰC HÀNH VÀ MINI PROJECT NGÀY 06
+--------------------------------------------------------------------------------
+
+1. Các tệp thực hành cần triển khai (đã điền đầy đủ các chỗ trống ___ thành code
+   chạy được):
+
+   a. BidDemo.java - Minh họa polymorphism với các loại Bid khác nhau. Một lớp cha trừu
+      tượng `Bid` lộ ra "cái gì" (effectivePrice), giấu "thế nào"; các lớp con
+      `RegularBid` và `ProxyBid` tự cài đặt theo cách riêng. Vòng lặp gọi cùng một
+      method nhưng chạy khác hành vi nhờ vtable.
+
+      ```java
+      // File: BidDemo.java  (Java 21)
+      import java.util.List;
+
+      // Lớp cha trừu tượng: lộ "cái gì" (effectivePrice), giấu "thế nào"
+      abstract class Bid { // từ khóa cho lớp trừu tượng
+          protected final String bidder;
+          protected final long base;            // giá đặt cơ bản
+          protected Bid(String bidder, long base) { this.bidder = bidder; this.base = base; }
+
+          // method ABSTRACT: mỗi loại Bid tự tính giá hiệu lực theo cách riêng
+          public abstract long effectivePrice(); // method không có thân hàm
+
+          public String bidder() { return bidder; }
+      }
+
+      // Đặt giá thường: giá hiệu lực = giá đặt
+      class RegularBid extends Bid { // từ khóa kế thừa lớp
+          RegularBid(String bidder, long base) { super(bidder, base); }
+          @Override public long effectivePrice() { return base; }   // annotation ghi đè, DYNAMIC dispatch
+      }
+
+      // Proxy/Auto bid: hệ thống tự nâng tới trần, giá hiệu lực = min(base, trần)
+      class ProxyBid extends Bid {
+          private final long maxLimit;
+          ProxyBid(String bidder, long base, long maxLimit) {
+              super(bidder, base);
+              this.maxLimit = maxLimit;
+          }
+          @Override public long effectivePrice() { return Math.min(base, maxLimit); }
+      }
+
+      public class BidDemo {
+          public static void main(String[] args) {
+              // Khai báo kiểu cha, đối tượng thực khác nhau → ĐA HÌNH
+              List<Bid> bids = List.of(
+                  new RegularBid("an", 100_000),
+                  new ProxyBid("binh", 500_000, 300_000),   // bị trần kéo về 300k
+                  new RegularBid("chi", 250_000)
+              );
+
+              // Cùng 1 lời gọi effectivePrice(), nhưng mỗi object chạy logic riêng (vtable)
+              for (Bid b : bids) {
+                  System.out.printf("%s -> giá hiệu lực: %d%n", b.bidder(), b.effectivePrice());
+              }
+          }
+      }
+      ```
+
+      Kết quả mong đợi:
+      an -> giá hiệu lực: 100000
+      binh -> giá hiệu lực: 300000 (proxy bị trần kéo xuống)
+      chi -> giá hiệu lực: 250000
+
+   b. BidIdentityDemo.java - Override `toString`/`equals`/`hashCode` và chứng minh
+      trong `HashSet`. Hai đối tượng cùng giá trị nhưng khác instance được coi là
+      trùng nhau nên set chỉ giữ một phần tử.
+
+      ```java
+      // File: BidIdentityDemo.java  (Java 21)
+      import java.util.HashSet;
+      import java.util.Objects;
+      import java.util.Set;
+
+      final class Bid {
+          private final long id;          // định danh nghiệp vụ
+          private final String bidder;
+          private final long amount;
+
+          Bid(long id, String bidder, long amount) {
+              this.id = id; this.bidder = bidder; this.amount = amount;
+          }
+
+          @Override public boolean equals(Object o) { // lớp gốc của mọi đối tượng
+              if (this == o) return true;
+              if (!(o instanceof Bid b)) return false; // toán tử kiểm tra kiểu
+              return id == b.id && amount == b.amount && Objects.equals(bidder, b.bidder);
+          }
+
+          // PHẢI dùng đúng các field đã dùng trong equals
+          @Override public int hashCode() { return Objects.hash(id, bidder, amount); } // method bắt buộc đi kèm equals
+
+          @Override public String toString() {
+              return "Bid{id=%d, bidder='%s', amount=%d}".formatted(id, bidder, amount);
+          }
+      }
+
+      public class BidIdentityDemo {
+          public static void main(String[] args) {
+              Bid a = new Bid(1, "an", 100_000);
+              Bid b = new Bid(1, "an", 100_000);   // CÙNG giá trị, KHÁC instance
+
+              System.out.println(a == b);          // false  (khác tham chiếu)
+              System.out.println(a.equals(b));     // true   (bằng theo giá trị)
+              System.out.println(a.hashCode() == b.hashCode()); // true (bắt buộc!)
+              System.out.println(a);               // Bid{id=1, bidder='an', amount=100000}
+
+              Set<Bid> set = new HashSet<>();
+              set.add(a);
+              set.add(b);                           // bị coi là trùng → KHÔNG thêm
+              System.out.println("Số phần tử trong set: " + set.size()); // 1
+          }
+      }
+      ```
+
+      Bài tập tự kiểm chứng: Xóa method `hashCode()` đi, chạy lại - `set.size()` sẽ
+      thành `2` (hai object "bằng nhau" nhưng rơi vào hai bucket khác nhau). Đây là
+      minh chứng sống cho quy tắc "override `equals` phải override `hashCode`".
+
+   c. CompositionDemo.java - Minh họa composition: `Auction` "has-a" `Item` (không
+      kế thừa). Auction chứa Item và danh sách người tham gia như field, ủy quyền
+      thao tác qua method.
+
+      ```java
+      // File: CompositionDemo.java  (Java 21)
+      import java.util.ArrayList;
+      import java.util.List;
+
+      class Item {                         // thành phần độc lập
+          private final String name;
+          Item(String name) { this.name = name; }
+          public String name() { return name; }
+      }
+
+      class Auction {
+          private final Item item;                                  // has-a Item
+          private final List<String> bidders = new ArrayList<>();   // has-a danh sách
+
+          Auction(Item item) { this.item = item; }                 // composition lúc khởi tạo
+
+          public void addBidder(String name) { bidders.add(name); } // ủy quyền có kiểm soát
+          public String summary() {
+              return "Đấu giá '%s' với %d người tham gia".formatted(item.name(), bidders.size());
+          }
+      }
+
+      public class CompositionDemo {
+          public static void main(String[] args) {
+              Auction a = new Auction(new Item("iPhone 15"));
+              a.addBidder("an");
+              a.addBidder("binh");
+              System.out.println(a.summary()); // Đấu giá 'iPhone 15' với 2 người tham gia
+          }
+      }
+      ```
+
+2. Nhiệm vụ Mini Project Auction API (Day 06) - tái cấu trúc theo OOP cho chuẩn,
+   nối tiếp Day 03 (Auction/Bid đã có validation giá dương, tăng dần):
+
+   - Bước 0: Điền đầy đủ các chỗ trống ___ trong code thực hành ở trên (đã hoàn
+     thành ở mục 1).
+   - Bước 1: Mô hình hóa phân cấp đối tượng bằng Encapsulation (field `private` + getter)
+     và Composition:
+     + `User { long id; String name; }`
+     + `Item { long id; String title; long startPrice; }`
+     + `Bid { long id; User bidder; long amount; }` - tham chiếu tới `User`.
+     + `Auction` "has-a" một `Item` và "has-a" một `List<Bid>` (không kế thừa List).
+   - Bước 2: Override `equals()`/`hashCode()` hợp lý:
+     + `User` định danh theo `id`.
+     + `Bid` định danh theo `id` (hoặc theo `id + bidder + amount` tùy nghiệp vụ).
+     + Dùng `Objects.equals`/`Objects.hash`, kèm `@Override`.
+   - Bước 3: Override `toString()` cho cả 4 class để log dễ đọc (đừng in object thô).
+   - Bước 4: Trong `Auction`, viết `place(Bid)` ủy quyền việc thêm vào list nhưng
+     vẫn giữ lại validation của Day 03 (giá phải dương và lớn hơn giá hiện tại).
+   - Bước 5: Chứng minh polymorphism: tạo `RegularBid` và `ProxyBid` (kế thừa/implement
+     `Bid` hoặc interface `Biddable`), gom vào một `List`, lặp gọi `effectivePrice()`.
+   - Bước 6: Ghi vào `notes/day-06.md` câu trả lời bằng lời của bạn cho câu hỏi: "vì
+     sao `Auction` không nên `extends ArrayList<Bid>`". Gợi ý cốt lõi: vì Auction
+     không phải "là một" danh sách (vi phạm quan hệ is-a), việc kế thừa ArrayList sẽ
+     làm lộ toàn bộ API của list (add/remove/clear...) khiến người ngoài phá vỡ
+     invariant về thứ tự/tính hợp lệ của các bid, và gây fragile base class. Đúng
+     hơn là Auction "has-a" một danh sách bid và chỉ lộ ra các thao tác có kiểm
+     soát như `place(Bid)`.
+
+================================================================================
+KẾT THÚC GHI CHÚ NGÀY 06 - ĐÃ HOÀN THÀNH TOÀN BỘ LÝ THUYẾT & 9 CÂU HỎI PHỎNG VẤN
+================================================================================
